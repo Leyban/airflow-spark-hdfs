@@ -1,0 +1,5 @@
+/airflow_env
+
+/logs
+
+/dags/__pycache__
