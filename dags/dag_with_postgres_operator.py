@@ -30,7 +30,7 @@ with DAG(
         task_id='insert_into_table',
         postgres_conn_id='postgres_localhost',
         sql="""
-                INSERT INTO dag_runs (dt, dag_id) VALUES ('{{ds}}', '{{dag.dag_id}}')
+            INSERT INTO dag_runs (dt, dag_id) VALUES ('{{ds}}', '{{dag.dag_id}}')
         """
     )
     
