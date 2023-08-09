@@ -3,3 +3,11 @@
 /logs
 
 /dags/__pycache__
+
+/hdfs
+
+/data
+
+/metastore-postgresql
+
+/analysis/user
