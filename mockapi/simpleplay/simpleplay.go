@@ -1,8 +1,7 @@
-package main
+package simpleplay
 
 import (
 	"encoding/xml"
-	"fmt"
 	"net/http"
 )
 
@@ -38,7 +37,11 @@ type BetDetail struct {
 	State         bool        `xml:"State"`
 }
 
-func handleRequest(w http.ResponseWriter, r *http.Request) {
+type SimplePlayHandler interface {
+	HandleSimplePlay(w http.ResponseWriter, r *http.Request)
+}
+
+func HandleSimplePlay(w http.ResponseWriter, r *http.Request) {
 	betDetails := []BetDetail{
 		{
 			BetTime:       "2023-08-01 12:00:00",
@@ -103,14 +106,4 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(xml.Header + string(xmlData)))
-}
-
-func main() {
-	http.HandleFunc("/", handleRequest)
-	port := 8800
-	fmt.Printf("Server is listening on port %d...\n", port)
-	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
-	if err != nil {
-		fmt.Println("Error:", err)
-	}
 }

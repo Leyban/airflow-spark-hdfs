@@ -43,13 +43,13 @@ def move_data_pgsoft_wager():
                     create_at, update_at
                 )
                 SELECT
-                '{1}', '{2}', '{3}', '{4}', '{5}', '{6}', '{7}', '{8}', '{9}', '{10}', 
+                '{1}', '{2}', '{3}', '{4}', '{5}', '{6}', '{7}', '{8}', '{9}', '{10}',
                 '{11}', '{12}', '{13}', '{14}', '{15}', '{16}', '{17}', '{18}'
                 WHERE NOT EXISTS (SELECT 1 FROM {19} WHERE bet_id = {20} AND bet_time >= '{21}' AND bet_time <='{22}');
-                        """.format(PGSOFT_WAGER_TABLE,w.bet_id, w.parent_bet_id, w.player_name,
+                        """.format(PGSOFT_WAGER_TABLE, w.bet_id, w.parent_bet_id, w.player_name,
                     w.currency, w.game_id, w.platform, w.bet_type, w.transaction_type, w.bet_amount, w.win_amount,
                     w.jackpot_rtp_contribution_amount, w.jackpot_win_amount, w.balance_before, w.balance_after,
-                    w.row_version, w.bet_time, utc_now, utc_now,PGSOFT_WAGER_TABLE,
+                    w.row_version, w.bet_time, utc_now, utc_now, PGSOFT_WAGER_TABLE,
                     w.bet_id,start_time,end_time)
 
                 cursor.execute(save_pgwagers)
