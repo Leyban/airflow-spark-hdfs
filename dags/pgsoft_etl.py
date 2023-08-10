@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 import requests
 import logging
 
+
+PGSOFT_OLD_VERSION_TABLE ='pgsoft_old_version'
+
 def download_pgsoft() :
     secret_key = Variable.get("PG_SECRECT_KEY")
     operator_token = Variable.get("PG_OPERATOR_TOKEN")
@@ -15,7 +18,10 @@ def download_pgsoft() :
 
     history_api = '/v2/Bet/GetHistory'
 
-    url = f"{pg_history_url}{history_api}"
+    # url = f"{pg_history_url}{history_api}" 
+    
+    url = "htttp://localhost:8800/pg_soft" # MockAPI
+    
     latest_row_version = get_pgversion()
     latest_row_version = int(latest_row_version)
     try:
@@ -34,13 +40,7 @@ def download_pgsoft() :
         if response.status_code == 404:
             print("Error 404: Not Found")
         else:
-            try:
-                res_obj = response.json().get('data',[])
-                total_data_length = len(res_obj)
-                print(f"Total {total_data_length}")
-                create_pgwager(res_obj)
-            except json.JSONDecodeError as err:
-                print("JSON parsing error:", err)
+            pass
 
     except requests.exceptions.RequestException as err:
         print("Request error:", err)

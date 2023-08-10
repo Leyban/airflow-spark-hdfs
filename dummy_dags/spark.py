@@ -37,7 +37,7 @@ df.createOrReplaceTempView("records")
 out_df = df.withColumn('year', lit(year)).withColumn('month', lit(month)).withColumn('day', lit(day))
 out_df.show()
 
-# tblLocation = 'hdfs://172.16.199.46:8020/user/hive/datalake/records.parquet'
+# tblLocation = 'hdfs://172.16.199.46:8020/user/hive/datalake/records'
 # out_df.write.partitionBy('year', 'month', 'day').mode('append').parquet(tblLocation)
 
 # sqlDF = spark.sql("SELECT * FROM records")

@@ -53,16 +53,13 @@ func runQuery() []BetDetail {
 func HandlePGSoft(w http.ResponseWriter, r *http.Request) {
 	result := runQuery()
 
-	// Convert the result to JSON format
 	jsonResult, err := json.Marshal(result)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	// Set the content type header to indicate JSON response
 	w.Header().Set("Content-Type", "application/json")
 
-	// Write the JSON data to the response writer
 	w.Write(jsonResult)
 }
