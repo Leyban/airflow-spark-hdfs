@@ -10,25 +10,25 @@ import (
 )
 
 type BetDetail struct {
-	ID                           int64   `db:"id" json:"id"`
-	BetID                        int64   `db:"bet_id" json:"betId"`
-	ParentBetID                  int64   `db:"parent_bet_id" json:"parentBetId"`
-	PlayerName                   string  `db:"player_name" json:"playerName"`
-	Currency                     string  `db:"currency" json:"currency"`
-	GameID                       int     `db:"game_id" json:"gameId"`
-	Platform                     int     `db:"platform" json:"platform"`
-	BetType                      int     `db:"bet_type" json:"betType"`
-	TransactionType              int     `db:"transaction_type" json:"transactionType"`
-	BetAmount                    float64 `db:"bet_amount" json:"betAmount"`
-	WinAmount                    float64 `db:"win_amount" json:"winAmount"`
-	JackpotRtpContributionAmount float64 `db:"jackpot_rtp_contribution_amount" json:"jackpotRtpContributionAmount"`
-	JackpotWinAmount             float64 `db:"jackpot_win_amount" json:"jackpotWinAmount"`
-	BalanceBefore                float64 `db:"balance_before" json:"balanceBefore"`
-	BalanceAfter                 float64 `db:"balance_after" json:"balanceAfter"`
-	RowVersion                   int64   `db:"row_version" json:"rowVersion"`
-	BetTime                      string  `db:"bet_time" json:"betTime"`
-	CreateAt                     string  `db:"create_at" json:"create_at"`
-	UpdateAt                     string  `db:"update_at" json:"update_at"`
+	ID                           *int64   `db:"id" json:"id"`
+	BetID                        *int64   `db:"bet_id" json:"betId"`
+	ParentBetID                  *int64   `db:"parent_bet_id" json:"parentBetId"`
+	PlayerName                   *string  `db:"player_name" json:"playerName"`
+	Currency                     *string  `db:"currency" json:"currency"`
+	GameID                       *int     `db:"game_id" json:"gameId"`
+	Platform                     *int     `db:"platform" json:"platform"`
+	BetType                      *int     `db:"bet_type" json:"betType"`
+	TransactionType              *int     `db:"transaction_type" json:"transactionType"`
+	BetAmount                    *float64 `db:"bet_amount" json:"betAmount"`
+	WinAmount                    *float64 `db:"win_amount" json:"winAmount"`
+	JackpotRtpContributionAmount *float64 `db:"jackpot_rtp_contribution_amount" json:"jackpotRtpContributionAmount"`
+	JackpotWinAmount             *float64 `db:"jackpot_win_amount" json:"jackpotWinAmount"`
+	BalanceBefore                *float64 `db:"balance_before" json:"balanceBefore"`
+	BalanceAfter                 *float64 `db:"balance_after" json:"balanceAfter"`
+	RowVersion                   *int64   `db:"row_version" json:"rowVersion"`
+	BetTime                      *string  `db:"bet_time" json:"betTime"`
+	CreateAt                     *string  `db:"create_at" json:"-"`
+	UpdateAt                     *string  `db:"update_at" json:"-"`
 }
 
 func runQuery() []BetDetail {
