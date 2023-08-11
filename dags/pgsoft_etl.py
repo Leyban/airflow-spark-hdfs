@@ -1,49 +1,11 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.models import Variable
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-
-from datetime import datetime, timedelta
-import requests
-import logging
-
+import pendulum
 
 PGSOFT_OLD_VERSION_TABLE ='pgsoft_old_version'
-
-def download_pgsoft() :
-    secret_key = Variable.get("PG_SECRECT_KEY")
-    operator_token = Variable.get("PG_OPERATOR_TOKEN")
-    pg_history_url = Variable.get("PG_HISTORY_URL")
-
-    history_api = '/v2/Bet/GetHistory'
-
-    # url = f"{pg_history_url}{history_api}" 
-    
-    url = "htttp://localhost:8800/pg_soft" # MockAPI
-    
-    latest_row_version = get_pgversion()
-    latest_row_version = int(latest_row_version)
-    try:
-        form_data = {
-            "secret_key":     secret_key,
-            "operator_token": operator_token,
-            "bet_type":        "1",
-            "row_version":  latest_row_version,
-            "count":          "5000"
-        }
-
-        print(f"Start download pg: row_version {latest_row_version}")
-        response = requests.post(url, data=form_data)
-        response.raise_for_status() 
-        print(f"reposonse {response}")
-        if response.status_code == 404:
-            print("Error 404: Not Found")
-        else:
-            pass
-
-    except requests.exceptions.RequestException as err:
-        print("Request error:", err)
         
 def get_pgversion():
     conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
@@ -57,3 +19,34 @@ def get_pgversion():
         return latest_row_version
     else:
         return None
+    
+dag_spark = DAG(
+    'spark_demo_dag',
+    description='DAG',
+    schedule=None,
+    start_date=pendulum.datetime(2021, 1, 1, tz="UTC"),
+    catchup=False
+)
+
+get_version = PythonOperator(
+    task_id='get_pgsoft_version', 
+    python_callable=get_pgversion, 
+    dag=dag_spark
+)
+    
+extract = SparkSubmitOperator(
+    task_id='extract_task',
+    application ='/opt/airflow/files/extract.py', # TODO: Change path
+    conn_id= 'spark_conn_id',
+    application_args=["{{ti.xcom_pull(task_ids='get_pgsoft_version')}}"], # TODO: Check if passed correctly
+    dag=dag_spark
+)
+
+transform = SparkSubmitOperator(
+    task_id='transform_task',
+    application ='/opt/airflow/files/transform.py' , # TODO: Change path
+    conn_id= 'spark_conn_id',
+    dag=dag_spark
+)
+
+extract >> transform
