@@ -8,6 +8,7 @@ import sys
 spark = SparkSession.builder \
     .appName("Fetch_PGSoft_to_HDFS") \
     .master("local") \
+    .config("spark.hadoop.dfs.client.use.datanode.hostname", "true") \
     .enableHiveSupport() \
     .getOrCreate()
 
@@ -30,10 +31,10 @@ form_data = {
     "count":          "5000"
 }
 
-url = "http://localhost:8800/pg_soft" # TODO: Use Correct API
+url = "http://172.17.0.1:8800/pg_soft" # TODO: Use Correct API
 # url = f"{pg_history_url}{history_api}" 
 
-tblLocation = './user/hive/datalake/wagers/pgsoft' # TODO: Use correct file path
+tblLocation = 'hdfs://172.18.0.1:9010/user/hive/datalake/wagers/pgsoft' # TODO: Use correct file path
 
 try:
     # Fetch From API

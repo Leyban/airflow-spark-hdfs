@@ -8,7 +8,7 @@ postgres_user = 'postgres'
 postgres_password = 'secret'
 postgres_table = 'pgsoft_wager'
 
-hdfs_location = './user/hive/datalake/wagers/pgsoft' # TODO: Use correct path
+hdfs_location = 'hdfs://172.18.0.1:9010/user/hive/datalake/wagers/pgsoft' # TODO: Use correct path
 
 postgres_jar_location = "../postgresql-42.6.0.jar" # TODO: Use correct path
 
@@ -17,6 +17,7 @@ spark = SparkSession.builder \
     .appName("Clean_PGSoft_Save_to_HDFS") \
     .master("local") \
     .enableHiveSupport() \
+    .config("spark.hadoop.dfs.client.use.datanode.hostname", "true") \
     .config("spark.jars", postgres_jar_location) \
     .getOrCreate()
 

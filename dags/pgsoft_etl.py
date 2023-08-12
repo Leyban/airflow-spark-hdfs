@@ -5,13 +5,13 @@ from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOpe
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 import pendulum
 
-PGSOFT_OLD_VERSION_TABLE ='pgsoft_old_version'
+PGSOFT_VERSION_TABLE ='pgsoft_version'
         
 def get_pgversion():
     conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
     query = """
         SELECT row_version FROM {0} LIMIT 1
-    """.format(PGSOFT_OLD_VERSION_TABLE)
+    """.format(PGSOFT_VERSION_TABLE)
 
     df = conn_collector_pg_hook.get_pandas_df(query)
     if not df.empty:
@@ -21,7 +21,7 @@ def get_pgversion():
         return None
     
 dag_spark = DAG(
-    'spark_demo_dag',
+    'pgsoft_etl',
     description='DAG',
     schedule=None,
     start_date=pendulum.datetime(2021, 1, 1, tz="UTC"),
@@ -36,7 +36,7 @@ get_version = PythonOperator(
     
 extract = SparkSubmitOperator(
     task_id='extract_task',
-    application ='/opt/airflow/files/extract.py', # TODO: Change path
+    application ='/opt/spork/extract.py', # TODO: Change path
     conn_id= 'spark_conn_id',
     application_args=["{{ti.xcom_pull(task_ids='get_pgsoft_version')}}"], # TODO: Check if passed correctly
     dag=dag_spark
@@ -44,7 +44,7 @@ extract = SparkSubmitOperator(
 
 transform = SparkSubmitOperator(
     task_id='transform_task',
-    application ='/opt/airflow/files/transform.py' , # TODO: Change path
+    application ='/opt/spork/transform.py' , # TODO: Change path
     conn_id= 'spark_conn_id',
     dag=dag_spark
 )
