@@ -8,18 +8,25 @@ import sys
 import socket
 import getpass as gt
 
-spark = SparkSession.builder \
-    .appName("HadoopSparkTest") \
-    .master("spark://spark-master:7077") \
-    .config("spark.submit.deployMode","cluster") \
-    .config("spark.hadoop.dfs.client.use.datanode.hostname", "true") \
-    .enableHiveSupport() \
-    .getOrCreate()
+# spark = SparkSession.builder \
+#     .appName("HadoopSparkTest") \
+#     .master("spark://172.17.0.1:7077") \
+#     .config("spark.submit.deployMode","cluster") \
+#     .config("spark.hadoop.dfs.client.use.datanode.hostname", "true") \
+#     .enableHiveSupport() \
+#     .getOrCreate()
+
+print('==============================================')
+print('Starting App')
+print('==============================================')
+print("User login:", gt.getuser())
+
+hostname = socket.gethostname() 
+ipaddress = socket.gethostbyname(hostname)
+print(ipaddress)
 
 
 print(sys.version)
-
-print("PySpark version:", pyspark.version)
 
 print("User login:", gt.getuser())
 
@@ -31,7 +38,7 @@ print("======================= INDIVIDUAL ARGS START =========================="
 for v in sys.argv:
     print(v)
 
-print("======================= INDIVIDUAL ARGS START ==========================")
+print("======================= INDIVIDUAL ARGS END ==========================")
 
 
 # #hostname = "spark-master"

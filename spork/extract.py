@@ -4,52 +4,100 @@ import logging
 import requests
 import sys
 
-# Initialize spark session
-spark = SparkSession.builder \
-    .appName("Fetch_PGSoft_to_HDFS") \
-    .master("local") \
-    .config("spark.hadoop.dfs.client.use.datanode.hostname", "true") \
-    .enableHiveSupport() \
-    .getOrCreate()
+import socket
+import getpass as gt
 
-# Extract Spark Session from arguments
-# TODO: Inspect Arguments
-latest_row_version = sys.argv[1]
+import psycopg2
 
-# Define constants
-secret_key = ""
-operator_token = ""
-pg_history_url = ""
+print('==============================================')
+print('Starting App')
+print('==============================================')
+
+print(sys.version)
+print("User login:", gt.getuser())
+
+hostname = socket.gethostname() 
+ipaddress = socket.gethostbyname(hostname)
+print(ipaddress)
+
+# Extract Variables
+psycopg2_conn_string = sys.argv[1]
+HDFS_DATALAKE = sys.argv[2]
+SPARK_MASTER = sys.argv[3]
+pg_history_url = sys.argv[4]
+secret_key = sys.argv[5]
+operator_token = sys.argv[6]
+postgres_password = sys.argv[7]
 
 history_api = '/v2/Bet/GetHistory'
 
-form_data = {
-    "secret_key":     secret_key,
-    "operator_token": operator_token,
-    "bet_type":        "1",
-    "row_version":  latest_row_version,
-    "count":          "5000"
-}
+url = f"{pg_history_url}{history_api}" 
 
-url = "http://172.17.0.1:8800/pg_soft" # TODO: Use Correct API
-# url = f"{pg_history_url}{history_api}" 
+tblLocation = f'{HDFS_DATALAKE}/wagers/pgsoft'
 
-tblLocation = 'hdfs://172.18.0.1:9010/user/hive/datalake/wagers/pgsoft' # TODO: Use correct file path
+
+def get_simpleplay_version():    
+    try:
+        # Define connection
+        print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+        print(psycopg2_conn_string)
+        print(postgres_password)
+        conn = psycopg2.connect(psycopg2_conn_string, password=postgres_password)
+        cursor = conn.cursor()
+
+        # Execute Query
+        print("executing")
+        cursor.execute("SELECT row_version FROM pgsoft_version LIMIT 1")
+
+        # Get all results
+        print("fetching")
+        pgsoft_version = cursor.fetchone()
+
+        print(f"====================== PG_SOFT Version {pgsoft_version[0]} ======================")
+        cursor.close()
+        conn.close()
+            
+        return pgsoft_version[0]
+    
+    except:
+        logging.fatal("Unable to fetch data") 
+
+
+# Initialize spark session
+print("====================== Initializing Spark Session ======================")
+spark = SparkSession.builder \
+    .appName("Fetch_PGSoft_to_HDFS") \
+    .master(SPARK_MASTER) \
+    .enableHiveSupport() \
+    .getOrCreate()
+
+    # .config("spark.submit.deployMode","cluster") \
+
 
 try:
+    # Get Version
+    pgsoft_version = get_simpleplay_version()
+    
     # Fetch From API
-    print(f"Start download pg: row_version {latest_row_version}")
+    form_data = {
+        "secret_key":     secret_key,
+        "operator_token": operator_token,
+        "bet_type":        "1",
+        "row_version":  pgsoft_version,
+        "count":          "5000"
+    }
+    
+    print(f"Start download pg: row_version {pgsoft_version}")
     response = requests.post(url, data=form_data)
     response.raise_for_status() 
-    
+
     if response.status_code == 404:
-        print("Error 404: Not Found")
+        print("====================== Error 404: Not Found ======================")
     else:
-        json_content = response.json()
-        print(json_content)
-    
+        print(f"====================== Response contains {len(response.json())} rows ======================")
+
     # Create DF
-    print(f"response contains {len(response.json())} rows")
+    print("====================== Creating Spark Dataframe ======================")
     json_data = response.json()
     df = spark.createDataFrame(json_data) 
 
@@ -60,10 +108,12 @@ try:
         .withColumn("quarter", date_format(col("betTime"), "Q")) 
 
     # Save to HDFS
+    print("====================== Saving to HDFS ======================")
     df.write.partitionBy('year', 'quarter').mode('append').parquet(tblLocation)
 
 except requests.exceptions.RequestException as err:
-    print("Request error:", err)
+    logging.fatal("Request error:", err)
 
 except Exception as Argument:
-    logging.exception(f"Error occurred: {Argument}")
+    logging.fatal(f"Error occurred: {Argument}")
+    

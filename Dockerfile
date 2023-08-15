@@ -14,5 +14,6 @@ RUN export JAVA_HOME
 USER airflow
 
 COPY ./requirements.txt /
-RUN pip install -r /requirements.txt
+RUN python -m pip install --upgrade pip
+RUN pip3 install -r /requirements.txt
 COPY --chown=airflow:root ./dags /opt/airflow/dags

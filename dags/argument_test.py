@@ -11,14 +11,14 @@ PGSOFT_VERSION_TABLE ='pgsoft_version'
 HDFS_DATALAKE = Variable.get("HDFS_DATALAKE")
 JDBC_POSTGRES_COLLECTOR_CONN = Variable.get("JDBC_POSTGRES_COLLECTOR_CONN")
 PGSOFT_URL = Variable.get("PGSOFT_URL")
-POSTGRES_SECRET_PASSWORD = Variable.get("POSTGRES_SECRET_PASSWORD")
+# POSTGRES_SECRET_PASSWORD = Variable.get("POSTGRES_SECRET_PASSWORD")
 POSTGRES_USER = Variable.get("POSTGRES_USER")
 
 vardict = {
     "HDFS_DATALAKE" : Variable.get("HDFS_DATALAKE"),
     "JDBC_POSTGRES_COLLECTOR_CONN" : Variable.get("JDBC_POSTGRES_COLLECTOR_CONN"),
     "PGSOFT_URL" : Variable.get("PGSOFT_URL"),
-    "POSTGRES_SECRET_PASSWORD" : Variable.get("POSTGRES_SECRET_PASSWORD"),
+    # "POSTGRES_SECRET_PASSWORD" : Variable.get("POSTGRES_SECRET_PASSWORD"),
     "POSTGRES_USER" : Variable.get("POSTGRES_USER")
 }
 
@@ -54,7 +54,7 @@ argprint = SparkSubmitOperator(
     task_id='argprint',
     application ='/opt/spork/test.py',
     conn_id= 'spark_conn_id',
-    application_args=["{{ti.xcom_pull(task_ids='get_pgsoft_version')}}", HDFS_DATALAKE, JDBC_POSTGRES_COLLECTOR_CONN, PGSOFT_URL, POSTGRES_SECRET_PASSWORD, POSTGRES_USER], # TODO: Check if passed correctly
+    application_args=["{{ti.xcom_pull(task_ids='get_pgsoft_version')}}", HDFS_DATALAKE, JDBC_POSTGRES_COLLECTOR_CONN, PGSOFT_URL,POSTGRES_USER], # TODO: Check if passed correctly
     dag=dag_spark
 )
 

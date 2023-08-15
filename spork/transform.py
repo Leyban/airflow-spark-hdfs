@@ -1,25 +1,30 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import current_timestamp
+import sys
 
-# Define Constants
-# TODO: Use correct params
-postgres_conn_string = 'jdbc:postgresql://172.17.0.1:5432/collectorDB' 
-postgres_user = 'postgres'
-postgres_password = 'secret'
+# Extract Variables
+HDFS_DATALAKE = sys.argv[1]
+SPARK_MASTER = sys.argv[2]
+JDBC_POSTGRES_COLLECTOR_CONN = sys.argv[3]
+PGSOFT_URL = sys.argv[4]
+POSTGRES_PASSWORD = sys.argv[5]
+POSTGRES_USER = sys.argv[6]
+
 postgres_table = 'pgsoft_wager'
 
-hdfs_location = 'hdfs://172.18.0.1:9010/user/hive/datalake/wagers/pgsoft' # TODO: Use correct path
+hdfs_location = f'{HDFS_DATALAKE}/wagers/pgsoft'
 
 postgres_jar_location = "../postgresql-42.6.0.jar" # TODO: Use correct path
 
 # Start Session
 spark = SparkSession.builder \
     .appName("Clean_PGSoft_Save_to_HDFS") \
-    .master("local") \
+    .master(SPARK_MASTER) \
     .enableHiveSupport() \
     .config("spark.hadoop.dfs.client.use.datanode.hostname", "true") \
     .config("spark.jars", postgres_jar_location) \
     .getOrCreate()
+
 
 # Load Data into DF
 df=spark.read.parquet(hdfs_location)
@@ -56,11 +61,11 @@ df = df.withColumn("update_at", current_timestamp()).withColumn("create_at", cur
 
 # Write to Postgres
 df.write.format('jdbc').options(
-    url=postgres_conn_string,
+    url=JDBC_POSTGRES_COLLECTOR_CONN,
     driver='org.postgresql.Driver',
     dbtable=postgres_table,
-    user=postgres_user,
-    password=postgres_password
+    user=POSTGRES_USER,
+    password=POSTGRES_PASSWORD
 ).mode('Append').save()
 
 
