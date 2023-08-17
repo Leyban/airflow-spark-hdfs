@@ -4,21 +4,7 @@ import logging
 import requests
 import sys
 
-import socket
-import getpass as gt
-
 import psycopg2
-
-print('==============================================')
-print('Starting App')
-print('==============================================')
-
-print(sys.version)
-print("User login:", gt.getuser())
-
-hostname = socket.gethostname() 
-ipaddress = socket.gethostbyname(hostname)
-print(ipaddress)
 
 # Extract Variables
 psycopg2_conn_string = sys.argv[1]
@@ -39,9 +25,6 @@ tblLocation = f'{HDFS_DATALAKE}/wagers/pgsoft'
 def get_simpleplay_version():    
     try:
         # Define connection
-        print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-        print(psycopg2_conn_string)
-        print(postgres_password)
         conn = psycopg2.connect(psycopg2_conn_string, password=postgres_password)
         cursor = conn.cursor()
 
@@ -53,7 +36,7 @@ def get_simpleplay_version():
         print("fetching")
         pgsoft_version = cursor.fetchone()
 
-        print(f"====================== PG_SOFT Version {pgsoft_version[0]} ======================")
+        print(f" PG_SOFT Version {pgsoft_version[0]} ")
         cursor.close()
         conn.close()
             
@@ -63,57 +46,57 @@ def get_simpleplay_version():
         logging.fatal("Unable to fetch data") 
 
 
-# Initialize spark session
-print("====================== Initializing Spark Session ======================")
-spark = SparkSession.builder \
-    .appName("Fetch_PGSoft_to_HDFS") \
-    .master(SPARK_MASTER) \
-    .enableHiveSupport() \
-    .getOrCreate()
+def main():
+    # Initialize spark session
+    print(" Initializing Spark Session ")
+    spark = SparkSession.builder \
+        .appName("Fetch_PGSoft_to_HDFS") \
+        .master(SPARK_MASTER) \
+        .enableHiveSupport() \
+        .getOrCreate()
 
-    # .config("spark.submit.deployMode","cluster") \
+    try:
+        # Get Version
+        pgsoft_version = get_simpleplay_version()
+        
+        # Fetch From API
+        form_data = {
+            "secret_key":     secret_key,
+            "operator_token": operator_token,
+            "bet_type":        "1",
+            "row_version":  pgsoft_version,
+            "count":          "5000"
+        }
+        
+        print(f"Start download pg: row_version {pgsoft_version}")
+        response = requests.post(url, data=form_data)
+        response.raise_for_status() 
 
+        if response.status_code == 404:
+            print(" Error 404: Not Found ")
+        else:
+            print(f" Response contains {len(response.json())} rows ")
 
-try:
-    # Get Version
-    pgsoft_version = get_simpleplay_version()
-    
-    # Fetch From API
-    form_data = {
-        "secret_key":     secret_key,
-        "operator_token": operator_token,
-        "bet_type":        "1",
-        "row_version":  pgsoft_version,
-        "count":          "5000"
-    }
-    
-    print(f"Start download pg: row_version {pgsoft_version}")
-    response = requests.post(url, data=form_data)
-    response.raise_for_status() 
+        # Create DF
+        print(" Creating Spark Dataframe ")
+        json_data = response.json()
+        df = spark.createDataFrame(json_data) 
 
-    if response.status_code == 404:
-        print("====================== Error 404: Not Found ======================")
-    else:
-        print(f"====================== Response contains {len(response.json())} rows ======================")
+        # Partitioning
+        df = df \
+            .withColumn("betTime",to_timestamp(df["betTime"])) \
+            .withColumn("year", date_format(col("betTime"), "yyyy")) \
+            .withColumn("quarter", date_format(col("betTime"), "Q")) 
 
-    # Create DF
-    print("====================== Creating Spark Dataframe ======================")
-    json_data = response.json()
-    df = spark.createDataFrame(json_data) 
+        # Save to HDFS
+        print(" Saving to HDFS ")
+        df.write.partitionBy('year', 'quarter').mode('append').parquet(tblLocation)
 
-    # Partitioning
-    df = df \
-        .withColumn("betTime",to_timestamp(df["betTime"])) \
-        .withColumn("year", date_format(col("betTime"), "yyyy")) \
-        .withColumn("quarter", date_format(col("betTime"), "Q")) 
+    except requests.exceptions.RequestException as err:
+        logging.fatal("Request error:", err)
 
-    # Save to HDFS
-    print("====================== Saving to HDFS ======================")
-    df.write.partitionBy('year', 'quarter').mode('append').parquet(tblLocation)
+    except Exception as Argument:
+        logging.fatal(f"Error occurred: {Argument}")
 
-except requests.exceptions.RequestException as err:
-    logging.fatal("Request error:", err)
-
-except Exception as Argument:
-    logging.fatal(f"Error occurred: {Argument}")
-    
+if __name__=="__main__":
+    main()
