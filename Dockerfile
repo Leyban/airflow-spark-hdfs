@@ -1,21 +1,19 @@
 FROM apache/airflow:2.6.3
-
-COPY requirements.txt .
-COPY openjdk-8-jdk_8u322-b06-1~deb9u1_amd64.deb .
-COPY openjdk-8-jre_8u322-b06-1~deb9u1_amd64.deb .
-
-# RUN pip install -r requirements.txt
-
 USER root
 
-# Java is required in order to spark-submit work
-RUN apt-get upgrade &&\
-    apt-get update &&\
-    apt-get install -y software-properties-common &&\
-    add-apt-repository ppa:openjdk-r/ppa &&\
-    dpkg -i openjdk-8-jre_8u322-b06-1~deb9u1_amd64.deb &&\
-    dpkg -i openjdk-8-jdk_8u322-b06-1~deb9u1_amd64.deb
+# Install OpenJDK-11
+RUN apt update && \
+    apt-get install -y openjdk-11-jdk && \
+    apt-get install -y ant && \
+    apt-get clean;
 
-# Setup JAVA_HOME 
-ENV JAVA_HOME /usr/lib/jvm/java-8-openjdk-amd64
+# Set JAVA_HOME
+ENV JAVA_HOME /usr/lib/jvm/java-11-openjdk-amd64/
 RUN export JAVA_HOME
+
+USER airflow
+
+COPY ./requirements.txt /
+RUN python -m pip install --upgrade pip
+RUN pip3 install -r /requirements.txt
+COPY --chown=airflow:root ./dags /opt/airflow/dags
