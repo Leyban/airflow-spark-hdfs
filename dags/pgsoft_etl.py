@@ -58,7 +58,6 @@ transform = SparkSubmitOperator(
         HDFS_DATALAKE, 
         SPARK_MASTER,
         JDBC_POSTGRES_COLLECTOR_CONN, 
-        PGSOFT_URL, 
         POSTGRES_PASSWORD, 
         POSTGRES_USER
     ], 
