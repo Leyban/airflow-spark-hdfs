@@ -31,6 +31,10 @@ type BetDetail struct {
 	UpdateAt                     *string  `db:"update_at" json:"-"`
 }
 
+type Response struct {
+	Data []BetDetail `json:"data"`
+}
+
 func runQuery() []BetDetail {
 	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=dummyDB sslmode=disable")
 	if err != nil {
@@ -52,8 +56,11 @@ func runQuery() []BetDetail {
 
 func HandlePGSoft(w http.ResponseWriter, r *http.Request) {
 	result := runQuery()
+	response := Response{
+		Data: result,
+	}
 
-	jsonResult, err := json.Marshal(result)
+	jsonResult, err := json.Marshal(response)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return

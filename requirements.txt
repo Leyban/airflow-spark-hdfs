@@ -3,5 +3,8 @@ pyDes
 # thrift
 # thrift-sasl
 # PyHive
+hdfs
 pyspark
 apache-airflow-providers-apache-spark
+apache-airflow-providers-apache-hive
+psycopg2

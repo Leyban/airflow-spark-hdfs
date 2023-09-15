@@ -1,24 +1,4 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-#
-
 # Basic Airflow cluster configuration for CeleryExecutor with Redis and PostgreSQL.
-#
-# WARNING: This configuration is for local development. Do not use it in a production deployment.
 #
 # This configuration supports basic configuration using environment variables or an .env file
 # The following variables are supported:
@@ -74,6 +54,7 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/spork:/opt/spork
+    - ${AIRFLOW_PROJ_DIR:-.}/drivers:/opt/drivers
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
@@ -296,5 +277,146 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+# =================================================================================
+# ||                              HIVE STANDALONE                                ||
+# =================================================================================
+
+  hive:
+    image: apache/hive:3.1.3
+    container_name: hive-standalone
+    environment:
+      - SERVICE_NAME=hiveserver2
+    ports:
+      - 10000:10000
+      - 10002:10002
+
+
+# =================================================================================
+# ||                              SPARK HADOOP                                   ||
+# =================================================================================
+
+  # namenode:
+  #   image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+  #   container_name: namenode
+  #   restart: always
+  #   ports:
+  #     - 9870:9870
+  #     - 9010:9000
+  #   volumes:
+  #     - hadoop_namenode:/hadoop/dfs/name
+  #   environment:
+  #     - CLUSTER_NAME=test
+  #     - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+  #   env_file:
+  #     - ./hadoop.env
+
+  # datanode:
+  #   image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+  #   container_name: datanode
+  #   restart: always
+  #   volumes:
+  #     - hadoop_datanode:/hadoop/dfs/data
+  #   environment:
+  #     SERVICE_PRECONDITION: "namenode:9870"
+  #     CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+  #   ports:
+  #     - "9864:9864"
+  #   env_file:
+  #     - ./hadoop.env
+
+  # resourcemanager:
+  #   image: bde2020/hadoop-resourcemanager:2.0.0-hadoop3.2.1-java8
+  #   container_name: resourcemanager
+  #   restart: always
+  #   environment:
+  #     SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864"
+  #   env_file:
+  #     - ./hadoop.env
+
+  # nodemanager1:
+  #   image: bde2020/hadoop-nodemanager:2.0.0-hadoop3.2.1-java8
+  #   container_name: nodemanager
+  #   restart: always
+  #   environment:
+  #     SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+  #   env_file:
+  #     - ./hadoop.env
+
+  # historyserver:
+  #   image: bde2020/hadoop-historyserver:2.0.0-hadoop3.2.1-java8
+  #   container_name: historyserver
+  #   restart: always
+  #   environment:
+  #     SERVICE_PRECONDITION: "namenode:9000 namenode:9870 datanode:9864 resourcemanager:8088"
+  #   volumes:
+  #     - hadoop_historyserver:/hadoop/yarn/timeline
+  #   env_file:
+  #     - ./hadoop.env
+
+  # spark-master:
+  #   image: bde2020/spark-master:3.0.0-hadoop3.2
+  #   container_name: spark-master
+  #   depends_on:
+  #     - namenode
+  #     - datanode
+  #   ports:
+  #     - "8080:8080"
+  #     - "7077:7077"
+  #   environment:
+  #     - INIT_DAEMON_STEP=setup_spark
+  #     - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+  #   volumes:
+  #     - ./spork:/opt/app
+  #     - ./drivers:/opt/drivers
+
+  # spark-worker-1:
+  #   image: bde2020/spark-worker:3.0.0-hadoop3.2
+  #   container_name: spark-worker-1
+  #   depends_on:
+  #     - spark-master
+  #   ports:
+  #     - "8081:8081"
+  #   environment:
+  #     - "SPARK_MASTER=spark://spark-master:7077"
+  #     - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+
+  # hive-server:
+  #   image: bde2020/hive:2.3.2-postgresql-metastore
+  #   container_name: hive-server
+  #   depends_on:
+  #     - namenode
+  #     - datanode
+  #   env_file:
+  #     - ./hadoop-hive.env
+  #   environment:
+  #     HIVE_CORE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore/metastore"
+  #     SERVICE_PRECONDITION: "hive-metastore:9083"
+  #   ports:
+  #     - "10005:10000"
+
+  # hive-metastore:
+  #   image: bde2020/hive:2.3.2-postgresql-metastore
+  #   container_name: hive-metastore
+  #   env_file:
+  #     - ./hadoop-hive.env
+  #   command: /opt/hive/bin/hive --service metastore
+  #   environment:
+  #     SERVICE_PRECONDITION: "namenode:9870 datanode:9864 hive-metastore-postgresql:5432"
+  #   ports:
+  #     - "9083:9083"
+
+  # hive-metastore-postgresql:
+  #   image: bde2020/hive-metastore-postgresql:2.3.0
+  #   container_name: hive-metastore-postgresql
+
+  # presto-coordinator:
+  #   image: shawnzhu/prestodb:0.181
+  #   container_name: presto-coordinator
+  #   ports:
+  #     - "8089:8089"
+
 volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  hadoop_historyserver:
   postgres-db-volume:

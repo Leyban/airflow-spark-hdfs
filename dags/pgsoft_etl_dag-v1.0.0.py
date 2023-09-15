@@ -1,9 +1,7 @@
 from airflow import DAG
-from airflow.operators.python import PythonOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.models import Variable
 
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 import pendulum
 
 # Parameters
@@ -21,13 +19,14 @@ JDBC_POSTGRES_COLLECTOR_CONN = Variable.get("JDBC_POSTGRES_COLLECTOR_CONN")
 PGSOFT_URL = Variable.get("PGSOFT_URL")
 POSTGRES_PASSWORD = Variable.get("POSTGRES_PW")
 POSTGRES_USER = Variable.get("POSTGRES_USER")
+SPARK_DRIVERS_DIR = Variable.get("SPARK_DRIVERS_DIR")
 
 COLLECTOR_DB_CONN_STR = Variable.get("COLLECTOR_DB_CONN_STR")
 
 
 # DAG Definition
 dag_spark = DAG(
-    'pgsoft_etl',
+    'pgsoft_etl-v1.0.0',
     description='DAG',
     schedule=None,
     start_date=pendulum.datetime(2021, 1, 1, tz="UTC"),
@@ -35,7 +34,7 @@ dag_spark = DAG(
 )
 
 extract = SparkSubmitOperator(
-    task_id='extract_task',
+    task_id='extract',
     application =f'{SPARK_APP_DIR}/extract.py',
     conn_id= 'spark_conn_id',
     application_args=[
@@ -51,7 +50,7 @@ extract = SparkSubmitOperator(
 )
 
 transform = SparkSubmitOperator(
-    task_id='transform_task',
+    task_id='transform',
     application =f'{SPARK_APP_DIR}/transform.py',
     conn_id= 'spark_conn_id',
     application_args=[
@@ -59,7 +58,8 @@ transform = SparkSubmitOperator(
         SPARK_MASTER,
         JDBC_POSTGRES_COLLECTOR_CONN, 
         POSTGRES_PASSWORD, 
-        POSTGRES_USER
+        POSTGRES_USER,
+        SPARK_DRIVERS_DIR
     ], 
     dag=dag_spark
 )
