@@ -1,8 +1,13 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from datetime import  datetime
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from datetime import  datetime,timedelta
 
-TMO_URL = 'https://api.louismmoo.com/api/viettinbank/transactions'
+VTB_TMO_URL = 'https://api.louismmoo.com/api/viettinbank/transactions' 
+PROVIDER_TMO = 'TMO'
+
+VIETINBANK_CODE = 'VTB'
+
 PAYMENT_TYPE_DLBT = "DLBT"
 PAYMENT_TYPE_DLBT60 = "DLBT60"
 
@@ -16,28 +21,26 @@ DEPOSIT_TABLE = 'deposit'
 DEPOSIT_LOG_TABLE ='deposit_log'
 
 DEPOSIT_STATUS_PROCESSING = 1
-DEPOSIT_STATUS_REVIEWED = 5
 
 
 dag = DAG(
     'auto_deposit_v1.0.0',
     description='Auto deposit proccessing',
-    schedule_interval='*/20 * * * *', 
-    start_date=datetime(2021, 1, 14), 
+    schedule_interval='*/1 * * * *', 
+    start_date=datetime(2023, 1, 14), 
     catchup=False
 )
 
 
 def extract_bank_acc():
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
-    engine_payment = conn_payment_pg_hook.get_sqlalchemy_engine()
 
     rawsql = f"""
         SELECT 
             ba.login_name as  username,
             ba.password,
             ba.account_no,
+            ba.provider,
             ba.id  as bank_account_id ,
             b.code as bank_code,
             b.id as bank_id
@@ -53,7 +56,6 @@ def extract_bank_acc():
 
 
 def get_old_online_bank_df(begin_str, end_str):
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
 
     rawsql = f"""
@@ -69,29 +71,6 @@ def get_old_online_bank_df(begin_str, end_str):
     return df
 
 
-def fetch_online_bank_data(username,password,accountNumber,begin,end, page):
-    import requests
-    import pandas as pd
-    
-    payload = {
-        "username":username,
-        "password":password ,
-        "accountNumber":accountNumber,
-        "begin":begin,
-        "end":end,
-        "page":page
-    }
-    
-    req =requests.post(
-        TMO_URL, 
-        data = payload
-    )
-
-    result = req.json().get('data',{}).get('transactions', [])
-    
-    df = pd.DataFrame.from_records(result)  
-    return df
-
 def compute_hash(row):
     from hashlib import sha1
 
@@ -104,6 +83,43 @@ def compute_hash(row):
         str( row['transaction_date'].year )
     )
     return sha1(hash_input.encode('utf-8')).hexdigest()   
+
+
+def fetch_VTB_TMO_data(username,password,accountNumber,begin,end, page):
+    import requests
+    import pandas as pd
+
+    payload = {
+        "username":username,
+        "password":password ,
+        "accountNumber":accountNumber,
+        "begin":begin,
+        "end":end,
+        "page":page
+    }
+    
+    req =requests.post(
+        VTB_TMO_URL, 
+        data = payload
+    )
+
+    result = req.json().get('data',{}).get('transactions', [])
+    
+    trans_df = pd.DataFrame.from_records(result)  
+
+    if trans_df.empty:
+        return trans_df
+
+    new_bank_df = trans_df.loc[:, ['trxId','remark','amount','processDate']]
+    new_bank_df = new_bank_df.rename(columns={
+        'trxId': 'bank_reference',
+        'remark':'bank_description',
+        'amount':'net_amount',
+        'processDate':'transaction_date'
+    })
+
+    return new_bank_df
+
 
 def update_online_bank_data(begin,given_day):
     import pandas as pd
@@ -122,25 +138,23 @@ def update_online_bank_data(begin,given_day):
         while True:
             print("Fetching Data for Page ", page)
             print( row['username'], row['password'], row['account_no'], begin_str, end_str, page)
-            trans_df = fetch_online_bank_data(
-                row['username'], 
-                row['password'], 
-                row['account_no'],
-                begin_str, 
-                end_str,
-                page
-            )
 
-            if trans_df.empty:
+            new_bank_df = pd.DataFrame()
+
+            if row['bank_code'] == VIETINBANK_CODE:
+                if row['provider'] == PROVIDER_TMO:
+                    trans_df = fetch_VTB_TMO_data(
+                        row['username'], 
+                        row['password'], 
+                        row['account_no'],
+                        begin_str, 
+                        end_str,
+                        page
+                    )
+                    new_bank_df = trans_df
+
+            if new_bank_df.empty:
                 break
-            
-            new_bank_df = trans_df.loc[:, ['trxId','remark','amount','processDate']]
-            new_bank_df = new_bank_df.rename(columns={
-                'trxId': 'bank_reference',
-                'remark':'bank_description',
-                'amount':'net_amount',
-                'processDate':'transaction_date'
-            })
 
             new_bank_df['bank_account_id'] = row['bank_account_id']
             new_bank_df['bank_id'] = row['bank_id']
@@ -164,13 +178,12 @@ def update_online_bank_data(begin,given_day):
             page += 1
 
 
-def get_online_bank_data():
+def get_online_bank_data(begin, end):
     import pandas as pd
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
 
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
 
-    rawsql = """
+    rawsql = f"""
         SELECT 
             id as online_bank_data_id,
             bank_account_id,
@@ -179,7 +192,9 @@ def get_online_bank_data():
             bank_description,
             net_amount as amount
         FROM online_bank_data as d
-        WHERE deposit_id  = 0 
+        WHERE deposit_id  = 0
+        AND transaction_date >= '{begin}'
+        AND transaction_date <= '{end}'
     """
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
 
@@ -190,7 +205,6 @@ def get_online_bank_data():
 
 
 def get_deposit(begin,end):
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
 
     rawsql = f"""
@@ -201,8 +215,10 @@ def get_deposit(begin,end):
             b.code as bank_code,
             d.ref_code,
             d.net_amount as amount,
+            d.payment_type_code,
             d.login_name,
-            ba.account_no
+            ba.account_no,
+            d.status
         FROM deposit as d
         LEFT JOIN bank_account as ba ON ba.id = d.bank_account_id
         LEFT JOIN bank as b ON b.id = ba.bank_id  
@@ -215,36 +231,30 @@ def get_deposit(begin,end):
 
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
 
-    df.drop_duplicates(subset=['ref_code', 'amount', 'bank_account_id', 'bank_code', 'status'], keep='first', inplace=True)
-
     return df
 
-def update_deposit(merged_df):
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
-    print("Approving Deposits: ", merged_df.shape[0])
+def clean_deposit_df(deposit_df):
+    deposit_df.drop_duplicates(subset=['ref_code', 'amount', 'bank_account_id', 'bank_code'], keep='first', inplace=True)
 
-    conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
+    ## Filter processing 
+    deposit_df = deposit_df[deposit_df['status'] == DEPOSIT_STATUS_PROCESSING]
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    for index, row in merged_df.iterrows():
-        select_matched_deposit_id_sql = f"""
-            SELECT 1
-            FROM online_bank_data
-            WHERE deposit_id = {row['deposit_id']}
-        """
+    return deposit_df
 
-        update_online_bank_sql = f""" 
-            UPDATE {ONLINE_BANK_ACCOUNT_TABLE} 
-            SET deposit_id = '{row['deposit_id']}',
-                update_at = '{now}'
-            WHERE id ='{row['online_bank_data_id']}' 
-        """
+def match(word,string):
+    import re
+    match_string = r'\b' + word + r'\b'
+    return bool(re.search(match_string, string))
 
-        df = conn_payment_pg_hook.get_pandas_df(select_matched_deposit_id_sql)
+def filter_vtb(x):
+    cd1 = (x['bank_code'] == 'VTB')
 
-        if df.empty:
-            conn_payment_pg_hook.run(update_online_bank_sql)
+    cd2 = (x['amount_x'] == x['amount_y'])
+
+    cd3 = match(str(x['ref_code']),str(x['bank_reference']).replace('credit','').replace(',','')) & (len(x['ref_code']) >=12)
+    cd4 = match(str(x['ref_code']),str(x['bank_description']))
+
+    return cd1 & cd2 & ( cd3 | cd4 ) 
 
 def get_matched(deposit_df, bank_df):
     import pandas as pd
@@ -253,51 +263,72 @@ def get_matched(deposit_df, bank_df):
     bank_df = bank_df.rename(columns={'amount':'amount_y'})
 
     merged = pd.merge(deposit_df, bank_df, how='left', on=['bank_id', 'bank_account_id'])
-
-    # Filters
-    cd1 = lambda x: (x['amount_x'] == x['amount_y'])
-    cd2 = lambda x: (x['ref_code'] == x['bank_reference']) 
     
-    merged['result'] = merged.apply(lambda x: cd1(x) & cd2(x), axis=1) 
+    conditions = lambda x: filter_vtb(x)
+
+    merged['result'] = merged.apply(lambda x: conditions(x), axis=1) 
     new_merged_df = merged[merged['result']]
+
+    # Drop duplicates
+    new_merged_df = new_merged_df.drop_duplicates(subset=['deposit_id'])
 
     return new_merged_df
 
-
-def auto_deposit(date_from, date_to):
-    date_format = '%Y-%m-%d %H:%M:%S'
-
-    given_day = datetime.strptime(date_to, date_format)
-
-    begin = datetime.strptime(date_from, date_format)
+def update_bank_data(merged_df):
+    conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
+    print("Updating Online Bank Data: ", merged_df.shape[0])
+    sqls = []
     
+    for index, row in merged_df.iterrows():
+        update_online_bank_sql = f""" 
+            UPDATE {ONLINE_BANK_ACCOUNT_TABLE} 
+            SET deposit_id = '{row['deposit_id']}' 
+            WHERE id ='{row['online_bank_data_id']}' 
+        """
+
+        sqls.append(update_online_bank_sql)
+
+
+    conn_payment_pg_hook.run(sqls)
+
+
+def auto_deposit():
+    given_day = datetime.utcnow()
+    begin = given_day - timedelta(hours=3)
+    
+    print("Updating Onlne Bank Data")
     update_online_bank_data(begin, given_day)
 
-    bank_df = get_online_bank_data()
+    print("Getting Online Bank Data")
+    bank_df = get_online_bank_data(begin, given_day)
     if bank_df.empty:
         print("No Bank Data Found")
         return
 
+    print("Getting Deposits")
     deposit_df = get_deposit(begin, given_day)
     if deposit_df.empty:
         print("No Deposits Found")
         return
+    
+    print("Cleaning Deposit")
+    filtered_deposit_df = clean_deposit_df(deposit_df)
+    if filtered_deposit_df.empty:
+        print("No Usable Deposits Found")
+        return
 
-    merged = get_matched(deposit_df, bank_df)
+    print("Merging Deposit and Bank Dataframes")
+    merged = get_matched(filtered_deposit_df, bank_df)
     if merged.empty:
         print("No Match Found")
         return
     
-    update_deposit(merged)
+    update_bank_data(merged)
 
     
 auto_deposit_operator = PythonOperator(
-    task_id='auto_deposit', 
-    python_callable=auto_deposit,     
-    op_kwargs={
-        "date_from": "{{ dag_run.conf['date_from']}}",
-        "date_to": "{{ dag_run.conf['date_to']}}"
-    },
+    task_id='auto_deposit',
+    python_callable=auto_deposit,
     dag=dag
 )
 

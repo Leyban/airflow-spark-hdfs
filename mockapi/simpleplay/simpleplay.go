@@ -37,10 +37,6 @@ type BetDetail struct {
 	State         bool        `xml:"State"`
 }
 
-type SimplePlayHandler interface {
-	HandleSimplePlay(w http.ResponseWriter, r *http.Request)
-}
-
 func HandleSimplePlay(w http.ResponseWriter, r *http.Request) {
 	betDetails := []BetDetail{
 		{
