@@ -3,7 +3,10 @@ package vtb
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"mock/onlinebankdata/vtb/datagen"
 	"net/http"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -18,28 +21,28 @@ type transactionQuery struct {
 }
 
 type DummyOnlineData struct {
-	Currency             string  `db:"currency"`
-	Remark               string  `db:"remark"`
-	Amount               float64 `db:"amount"`
-	Balance              float64 `db:"balance"`
-	TransactionID        string  `db:"trx_id"`
-	ProcessDate          string  `db:"process_date"`
-	Dorc                 string  `db:"dorc"`
-	RefType              string  `db:"ref_type"`
-	RefID                int64   `db:"ref_id"`
-	TellerID             string  `db:"teller_id"`
-	CorresponsiveAccount int64   `db:"corresponsive_account"`
-	CorresponsiveName    string  `db:"corresponsive_name"`
-	Channel              string  `db:"channel"`
-	ServiceBranchID      int64   `db:"service_branch_id"`
-	ServiceBranchName    string  `db:"service_branch_name"`
-	PMTType              string  `db:"pmt_type"`
-	SendingBankID        int64   `db:"sending_bank_id"`
-	SendingBranchID      int64   `db:"sending_branch_id"`
-	SendingBranchName    string  `db:"sending_branch_name"`
-	ReceivingBankID      int64   `db:"receiving_bank_id"`
-	ReceivingBranchID    int64   `db:"receiving_branch_id"`
-	ReceivingBranchName  string  `db:"receiving_branch_name"`
+	Currency             string  `db:"currency" json:"currency"`
+	Remark               string  `db:"remark" json:"remark"`
+	Amount               float64 `db:"amount" json:"amount"`
+	Balance              float64 `db:"balance" json:"balance"`
+	TransactionID        string  `db:"trx_id" json:"trxId"`
+	ProcessDate          string  `db:"process_date" json:"processDate"`
+	Dorc                 string  `db:"dorc" json:"dorc"`
+	RefType              string  `db:"ref_type" json:"refType"`
+	RefID                int64   `db:"ref_id" json:"refId"`
+	TellerID             string  `db:"teller_id" json:"tellerId"`
+	CorresponsiveAccount int64   `db:"corresponsive_account" json:"corresponsiveAccount"`
+	CorresponsiveName    string  `db:"corresponsive_name" json:"corresponsiveName"`
+	Channel              string  `db:"channel" json:"channel"`
+	ServiceBranchID      int64   `db:"service_branch_id" json:"serviceBranchId"`
+	ServiceBranchName    string  `db:"service_branch_name" json:"serviceBranchName"`
+	PMTType              string  `db:"pmt_type" json:"pmtType"`
+	SendingBankID        int64   `db:"sending_bank_id" json:"sendingBankId"`
+	SendingBranchID      int64   `db:"sending_branch_id" json:"sendingBranchId"`
+	SendingBranchName    string  `db:"sending_branch_name" json:"sendingBranchName"`
+	ReceivingBankID      int64   `db:"receiving_bank_id" json:"receivingBankId"`
+	ReceivingBranchID    int64   `db:"receiving_branch_id" json:"receivingBranchId"`
+	ReceivingBranchName  string  `db:"receiving_branch_name" json:"receivingBranchName"`
 }
 
 type Data struct {
@@ -54,9 +57,22 @@ type Data struct {
 }
 
 type Response struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-	Data    Data   `json:"data"`
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+	Data       Data   `json:"data"`
+	FromSource int64  `json:"from_source"`
+	UseProxy   bool   `json:"use_proxy"`
+}
+
+func formatTime(t string) (string, error) {
+	tParsed, err := time.Parse("02/01/2006", t)
+	if err != nil {
+		return "", err
+	}
+
+	tstring := tParsed.Format("1/2/2006")
+
+	return tstring, nil
 }
 
 func HandleTMO(w http.ResponseWriter, r *http.Request) {
@@ -64,10 +80,21 @@ func HandleTMO(w http.ResponseWriter, r *http.Request) {
 
 	err := json.NewDecoder(r.Body).Decode(&query)
 	if err != nil {
-		if err != nil {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
-		}
+		fmt.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	query.End, err = formatTime(query.End)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	query.Begin, err = formatTime(query.Begin)
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
 	}
 
 	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=dummyDB sslmode=disable")
@@ -117,15 +144,30 @@ func HandleTMO(w http.ResponseWriter, r *http.Request) {
             receiving_branch_id,
             receiving_branch_name
         FROM online_bank_data
-        WHERE process_date >= ?
-        AND process_date <= ?
+        WHERE CAST ( process_date as DATE) >= ?
+        AND CAST ( process_date as DATE) <= ?
     `)
 
+	// fmt.Println(`SELECT count(*) FROM (`+sql.String()+`) as t1`, query.Begin, query.End)
 	var count int64
 	err = db.Get(&count, db.Rebind(`SELECT count(*) FROM (`+sql.String()+`) as t1`), query.Begin, query.End)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if count == 0 {
+		err := datagen.GenerateData(300, query.Begin, query.End)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		err = db.Get(&count, db.Rebind(`SELECT count(*) FROM (`+sql.String()+`) as t1`), query.Begin, query.End)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	result.Data.TotalRecords = count
@@ -136,6 +178,11 @@ func HandleTMO(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	for i, t := range result.Data.Transactions {
+		uglyTime, _ := time.Parse(time.RFC3339Nano, t.ProcessDate)
+		result.Data.Transactions[i].ProcessDate = uglyTime.Format("01-02-2006 15:04:05")
 	}
 
 	jsonResult, err := json.Marshal(result)

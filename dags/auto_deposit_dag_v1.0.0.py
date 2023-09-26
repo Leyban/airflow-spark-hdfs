@@ -4,7 +4,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import  datetime,timedelta
 
 VTB_TMO_URL = 'https://api.louismmoo.com/api/viettinbank/transactions' 
-PROVIDER_TMO = 'TMO'
+PROVIDER_TMO = 1
 
 VIETINBANK_CODE = 'VTB'
 
@@ -12,7 +12,7 @@ PAYMENT_TYPE_DLBT = "DLBT"
 PAYMENT_TYPE_DLBT60 = "DLBT60"
 
 BANK_ACCOUNT_STATUS_ACTIVE = 1
-BANK_ACC_AUTO_STATUS = 1
+BANK_ACC_AUTO_STATUS = 2
 
 BANK_ACCOUNT_TABLE = 'bank_account'
 ONLINE_BANK_ACCOUNT_TABLE = 'online_bank_data'  
@@ -55,8 +55,11 @@ def extract_bank_acc():
     return bank_acc_df
 
 
-def get_old_online_bank_df(begin_str, end_str):
+def get_old_online_bank_df(date_from, date_to):
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
+
+    begin_str = date_from.strftime("%m/%d/%Y")
+    end_str = date_to.strftime("%m/%d/%Y")
 
     rawsql = f"""
         SELECT 
@@ -121,21 +124,21 @@ def fetch_VTB_TMO_data(username,password,accountNumber,begin,end, page):
     return new_bank_df
 
 
-def update_online_bank_data(begin,given_day):
+def update_online_bank_data(date_from,date_to):
     import pandas as pd
     from airflow.providers.postgres.hooks.postgres import PostgresHook
     
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
     engine_payment = conn_payment_pg_hook.get_sqlalchemy_engine()
 
-    begin_str = begin.strftime("%d/%m/%Y")
-    end_str = given_day.strftime("%d/%m/%Y")
+    begin_str = date_from.strftime("%d/%m/%Y")
+    end_str = date_to.strftime("%d/%m/%Y")
 
     bank_acc_df = extract_bank_acc()
     
     for index, row in bank_acc_df.iterrows():
         page = 0
-        while True:
+        while row['username']!= None and row['password']!= None and row['account_no']!= None and row['provider']!= None:
             print("Fetching Data for Page ", page)
             print( row['username'], row['password'], row['account_no'], begin_str, end_str, page)
 
@@ -163,7 +166,7 @@ def update_online_bank_data(begin,given_day):
 
             new_bank_df['hash_id'] = new_bank_df.apply(compute_hash, axis=1)
 
-            old_bank_df = get_old_online_bank_df(begin_str, end_str)
+            old_bank_df = get_old_online_bank_df(date_from, date_to)
             print('New Data Count: ', new_bank_df.shape[0])
 
             bank_df = new_bank_df[~new_bank_df['hash_id'].isin(old_bank_df['hash_id'])]
@@ -193,8 +196,8 @@ def get_online_bank_data(begin, end):
             net_amount as amount
         FROM online_bank_data as d
         WHERE deposit_id  = 0
-        AND transaction_date >= '{begin}'
-        AND transaction_date <= '{end}'
+        AND CAST (transaction_date as DATE) >= '{begin}'
+        AND CAST (transaction_date as DATE) <= '{end}'
     """
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
 
@@ -222,8 +225,8 @@ def get_deposit(begin,end):
         FROM deposit as d
         LEFT JOIN bank_account as ba ON ba.id = d.bank_account_id
         LEFT JOIN bank as b ON b.id = ba.bank_id  
-        WHERE d.create_at >= '{begin}'
-        AND d.create_at <= '{end}'
+        WHERE CAST (d.create_at as DATE) >= '{begin}'
+        AND CAST (d.create_at as DATE) <= '{end}'
         AND ( d.payment_type_code = '{PAYMENT_TYPE_DLBT}' OR d.payment_type_code = '{PAYMENT_TYPE_DLBT60}' )
         AND d.status = {DEPOSIT_STATUS_PROCESSING} 
         AND ba.auto_status = {BANK_ACC_AUTO_STATUS}
@@ -292,21 +295,29 @@ def update_bank_data(merged_df):
     conn_payment_pg_hook.run(sqls)
 
 
-def auto_deposit():
-    given_day = datetime.utcnow()
-    begin = given_day - timedelta(hours=3)
+def auto_deposit(**context):
+    date_to = datetime.utcnow()
+    date_from = date_to - timedelta(hours=3)
+
+    # Taking Optional Date Parameters
+    date_format = '%Y-%m-%d %H:%M:%S'
+    if 'date_from' in context['params']:
+        date_from = datetime.strptime(context['params']['date_from'], date_format)
     
+    if 'date_to' in context['params']:
+        date_to = datetime.strptime(context['params']['date_to'], date_format)
+
     print("Updating Onlne Bank Data")
-    update_online_bank_data(begin, given_day)
+    update_online_bank_data(date_from, date_to)
 
     print("Getting Online Bank Data")
-    bank_df = get_online_bank_data(begin, given_day)
+    bank_df = get_online_bank_data(date_from, date_to)
     if bank_df.empty:
         print("No Bank Data Found")
         return
 
     print("Getting Deposits")
-    deposit_df = get_deposit(begin, given_day)
+    deposit_df = get_deposit(date_from, date_to)
     if deposit_df.empty:
         print("No Deposits Found")
         return
