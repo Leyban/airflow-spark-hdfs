@@ -1,5 +1,5 @@
-from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.decorators import dag, task
+from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import  datetime,timedelta
 
@@ -17,6 +17,14 @@ PROVIDER_TMO = 1
 PROVIDER_CASSO = 2
 PROVIDER_ATT = 3
 PROVIDER_KMD = 4
+
+Provider_Value = {
+    PROVIDER_NONE: "None",
+    PROVIDER_TMO: "TMO",
+    PROVIDER_CASSO: "CASSO",
+    PROVIDER_ATT: "ATT",
+    PROVIDER_KMD: "KMD"
+}
 
 # Bank Codes
 VTB_CODE = 'VTB'
@@ -43,40 +51,6 @@ DEPOSIT_TABLE = 'deposit'
 DEPOSIT_LOG_TABLE ='deposit_log'
 
 DEPOSIT_STATUS_PROCESSING = 1
-
-
-dag = DAG(
-    'auto_deposit_v1.0.0',
-    description='Auto deposit proccessing',
-    schedule_interval='*/1 * * * *', 
-    start_date=datetime(2023, 1, 14), 
-    catchup=False,
-    max_active_runs=1
-)
-
-
-def extract_bank_acc():
-    conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
-
-    rawsql = f"""
-        SELECT 
-            ba.login_name as  username,
-            ba.password,
-            ba.account_no,
-            ba.provider,
-            ba.id as bank_account_id ,
-            b.code as bank_code,
-            b.id as bank_id
-        FROM bank_account AS ba 
-        LEFT JOIN bank AS b ON b.id = ba.bank_id 
-        WHERE auto_status = '{BANK_ACC_AUTO_STATUS}' 
-        AND status = '{BANK_ACCOUNT_STATUS_ACTIVE}'
-    """
-            
-    bank_acc_df = conn_payment_pg_hook.get_pandas_df(rawsql)
-      
-    return bank_acc_df
-
 
 def get_old_online_bank_df(date_from, date_to):
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
@@ -110,7 +84,8 @@ def compute_hash(row):
     )
     return sha1(hash_input.encode('utf-8')).hexdigest()   
 
-def fetch_EXIM_TMO_data(payload):
+
+def fetch_EXIM_TMO_data(payload, bank_acc, **context):
     import requests
     import pandas as pd
     
@@ -118,6 +93,18 @@ def fetch_EXIM_TMO_data(payload):
         EXIM_TMO_URL, 
         data = payload
     )
+
+    if req.json().get('success') == False:
+        print("An Error Occurred when fetching EXIM api")
+        print(req.json().get('message'))
+
+        error_details = {
+            "Account Name": payload['username'],
+            "Account Number": payload['accountNumber'],
+            "Provider": Provider_Value[bank_acc['provider']]
+        }
+
+        notify_discord(f"{bank_acc['code'].upper()} | TMO Fetching Failed", error_details, req.json().get('message'), **context)
 
     result = req.json().get('data',{}).get('currentHistoryList', [])
     
@@ -138,7 +125,8 @@ def fetch_EXIM_TMO_data(payload):
 
     return new_bank_df
 
-def fetch_VTB_TMO_data(payload):
+
+def fetch_VTB_TMO_data(payload, bank_acc, **context):
     import requests
     import pandas as pd
     
@@ -147,9 +135,22 @@ def fetch_VTB_TMO_data(payload):
         data = payload
     )
 
+    if req.json().get('success') == False:
+        print("An Error Occurred when fetching VTB api")
+        print(req.json().get('message'))
+
+        error_details = {
+            "Account Name": payload['username'],
+            "Account Number": payload['accountNumber'],
+            "Provider": Provider_Value[bank_acc['provider']]
+        }
+
+        notify_discord(f"{bank_acc['code'].upper()} | TMO Fetching Failed", error_details, req.json().get('message'), **context)
+        raise AirflowSkipException
+
     result = req.json().get('data',{}).get('transactions', [])
     
-    trans_df = pd.DataFrame.from_records(result)  
+    trans_df = pd.DataFrame.from_records(result)
 
     if trans_df.empty:
         return trans_df
@@ -167,111 +168,178 @@ def fetch_VTB_TMO_data(payload):
     return new_bank_df
 
 
-def update_online_bank_data(date_from,date_to):
+def update_old_bank_data(new_bank_df, old_bank_df, row):
     import pandas as pd
     from airflow.providers.postgres.hooks.postgres import PostgresHook
 
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
     engine_payment = conn_payment_pg_hook.get_sqlalchemy_engine()
 
+    new_bank_df['bank_account_id'] = row['bank_account_id']
+    new_bank_df['bank_id'] = row['bank_id']
+
+    new_bank_df['hash_id'] = new_bank_df.apply(compute_hash, axis=1)
+
+    print('New Data Count: ', new_bank_df.shape[0])
+
+    bank_df = new_bank_df[~new_bank_df['hash_id'].isin(old_bank_df['hash_id'])]
+    
+    print("Inserting into DB: ", bank_df.shape[0])
+
+    bank_df.to_sql(ONLINE_BANK_ACCOUNT_TABLE, con=engine_payment, if_exists='append', index=False)
+    old_bank_df = pd.concat([old_bank_df, bank_df])
+
+    return old_bank_df
+
+def notify_discord(title, details=None, error_message=None, **context):
+    from airflow.models import Variable
+    import requests
+    import json
+
+    log_url = context.get("task_instance").log_url
+
+    description = f">>>  [**{title}:**]({log_url}) -- *{datetime.now()}*"
+
+    if details != None:
+        description += "```"
+        for k in details:
+            description += f"{k}: {details[k]}\n"
+        if error_message != None:
+            description = description + f"Error Message: {error_message}"
+        description += "```"
+    
+    details = {
+        "embeds": [
+            {
+                "title": "Auto Deposit DAG",
+                "description": description
+            }
+        ]
+    }
+    
+    requests.post(Variable.get('DISCORD_WEBHOOK_URL'), json.dumps(details), headers={"Content-Type": "application/json"}
+)
+
+
+def update_VTB_TMO(bank_acc, date_from, date_to, **context):
+    print("Fetching VTB Data via TMO")
+
+    old_bank_df = get_old_online_bank_df(date_from, date_to)
+
     begin_str = date_from.strftime("%d/%m/%Y")
     end_str = date_to.strftime("%d/%m/%Y")
 
-    bank_acc_df = extract_bank_acc()
+    payload = {
+        "username":bank_acc['username'],
+        "password":bank_acc['password'],
+        "accountNumber":bank_acc['account_no'],
+        "begin": begin_str,
+        "end": end_str
+    }
+
+    page = 0
+    old_data_count = -1
+
+    while old_data_count < old_bank_df.shape[0]:
+        old_data_count = old_bank_df.shape[0]
+        payload["page"] = page
+
+        print(payload)
+        trans_df = fetch_VTB_TMO_data(payload, bank_acc, **context)
+
+
+        if trans_df.empty:
+            print("No New Data Received")
+            break
+
+        old_bank_df = update_old_bank_data(trans_df, old_bank_df, bank_acc)
+        page += 1
+
+
+def update_EXIM_TMO(bank_acc, date_from, date_to, **context):
+    print("Fetching EXIM Data via TMO")
 
     old_bank_df = get_old_online_bank_df(date_from, date_to)
-    
-    for _, row in bank_acc_df.iterrows():
-        page = 0
-        while row['username']!= None and row['password']!= None and row['account_no']!= None and row['provider'] > PROVIDER_NONE:
-            print( row['username'], row['password'], row['account_no'], begin_str, end_str, page)
 
-            new_bank_df = pd.DataFrame()
+    begin_str = date_from.strftime("%d/%m/%Y")
+    end_str = date_to.strftime("%d/%m/%Y")
 
-            if row['provider'] == PROVIDER_TMO:
-  
-                payload = {
-                    "username":row['username'],
-                    "password":row['password'],
-                    "accountNumber":row['account_no'],
-                }
-                
-                if row['bank_code'] == VTB_CODE.lower():
-                    print("Fetching VTB Data via TMO for page: ", page)
+    payload = {
+        "username":bank_acc['username'],
+        "password":bank_acc['password'],
+        "accountNumber":bank_acc['account_no'],
+        "fromDate": begin_str,
+        "toDate": end_str
+    }
 
-                    payload["begin"] = begin_str
-                    payload["end"] = end_str
-                    payload["page"] = page
+    print(payload)
+    trans_df = fetch_EXIM_TMO_data(payload, bank_acc, **context)
+    if trans_df.empty:
+        print("No Data Received")
+        return
 
-                    print(payload)
-                    trans_df = fetch_VTB_TMO_data(payload)
-                    new_bank_df = trans_df
-
-                elif row['bank_code'] == BIDV_CODE.lower():
-                    print("Not Implemented") # TODO: Implement this
-
-                elif row['bank_code'] == ACB_CODE.lower():
-                    print("Not Implemented") # TODO: Implement this
-
-                elif row['bank_code'] == VCB_CODE.lower():
-                    print("Not Implemented") # TODO: Implement this
-
-                elif row['bank_code'] == EXIM_CODE.lower():
-                    print("Fetching EXIM Data via TMO")
-
-                    payload["fromDate"] = begin_str
-                    payload["toDate"] = end_str
-
-                    print(payload)
-                    trans_df = fetch_EXIM_TMO_data(payload)
-                    new_bank_df = trans_df
-
-                elif row['bank_code'] == MBBANK_CODE.lower():
-                    print("Not Implemented") # TODO: Implement this
-
-                # Not sure if TMO supports these
-                elif row['bank_code'] == VPBANK_CODE.lower():
-                    print("Not Implemented") # TODO: Implement this
-
-                elif row['bank_code'] == TIMO_CODE.lower():
-                    print("Not Implemented") # TODO: Implement this
-
-                elif row['bank_code'] == TECH_CODE.lower():
-                    print("Not Implemented") # TODO: Implement this
+    update_old_bank_data(trans_df, old_bank_df, bank_acc)
 
 
-            if new_bank_df.empty:
-                print("No Data Received")
-                break
 
-            new_bank_df['bank_account_id'] = row['bank_account_id']
-            new_bank_df['bank_id'] = row['bank_id']
+def update_online_bank_data(bank_acc, date_from,date_to,**context):
+    if bank_acc['username'] == None or bank_acc['password'] == None or bank_acc['account_no'] == None or bank_acc['provider'] <= PROVIDER_NONE: 
+        print("Invalid Bank Account")
+        print(bank_acc)
 
-            new_bank_df['hash_id'] = new_bank_df.apply(compute_hash, axis=1)
+        error_details = {
+            "Account Name": bank_acc['username'],
+            "Account Number": bank_acc['account_no'],
+            "Provider": Provider_Value[bank_acc['provider']]
+        }
 
-            print('New Data Count: ', new_bank_df.shape[0])
+        notify_discord(f"{bank_acc['code'].upper()} | Invalid Bank Account", error_details, **context)
+        raise AirflowSkipException
 
-            bank_df = new_bank_df[~new_bank_df['hash_id'].isin(old_bank_df['hash_id'])]
-            if bank_df.empty:
-                print("All New Data are found in DB: Terminating Fetching")
-                break
-            
-            print("Inserting into DB: ", bank_df.shape[0])
+    print( bank_acc['username'], bank_acc['password'], bank_acc['account_no'], date_from, date_to )
 
-            bank_df.to_sql(ONLINE_BANK_ACCOUNT_TABLE, con=engine_payment, if_exists='append', index=False)
-            old_bank_df = pd.concat([old_bank_df, bank_df])
+    if bank_acc['provider'] == PROVIDER_TMO:
 
-            if row['bank_code'] != VTB_CODE.lower():
-                break
+        if bank_acc['bank_code'] == VTB_CODE.lower():
+            update_VTB_TMO(bank_acc, date_from, date_to, **context)
 
-            page += 1
+        elif bank_acc['bank_code'] == BIDV_CODE.lower():
+            print("Not Implemented") # TODO: Implement this
+            raise AirflowSkipException
+
+        elif bank_acc['bank_code'] == ACB_CODE.lower():
+            print("Not Implemented") # TODO: Implement this
+            raise AirflowSkipException
+
+        elif bank_acc['bank_code'] == VCB_CODE.lower():
+            print("Not Implemented") # TODO: Implement this
+            raise AirflowSkipException
+
+        elif bank_acc['bank_code'] == EXIM_CODE.lower():
+            update_EXIM_TMO(bank_acc, date_from, date_to, **context)
+
+        elif bank_acc['bank_code'] == MBBANK_CODE.lower():
+            print("Not Implemented") # TODO: Implement this
+            raise AirflowSkipException
+
+        # Not sure if TMO supports these
+        elif bank_acc['bank_code'] == VPBANK_CODE.lower():
+            print("Not Implemented") # TODO: Implement this
+            raise AirflowSkipException
+
+        elif bank_acc['bank_code'] == TIMO_CODE.lower():
+            print("Not Implemented") # TODO: Implement this
+            raise AirflowSkipException
+
+        elif bank_acc['bank_code'] == TECH_CODE.lower():
+            print("Not Implemented") # TODO: Implement this
+            raise AirflowSkipException
 
 
 def get_online_bank_data(begin, end):
     import pandas as pd
 
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
-
     rawsql = f"""
         SELECT 
             id as online_bank_data_id,
@@ -295,7 +363,6 @@ def get_online_bank_data(begin, end):
 
 def get_deposits():
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
-
     rawsql = f"""
         SELECT 
             id as deposit_id,
@@ -310,14 +377,12 @@ def get_deposits():
         WHERE ( payment_type_code = '{PAYMENT_TYPE_DLBT}' OR payment_type_code = '{PAYMENT_TYPE_DLBT60}' )
         AND status = {DEPOSIT_STATUS_PROCESSING} 
     """
-
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
-
     return df
+
 
 def get_bank_accounts():
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
-
     rawsql = f"""
         SELECT 
             id as bank_account_id,
@@ -326,24 +391,20 @@ def get_bank_accounts():
         FROM bank_account
         WHERE auto_status = {BANK_ACC_AUTO_STATUS}
     """
-
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
-
     return df
 
 def get_banks():
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
-
     rawsql = f"""
         SELECT 
             id as bank_id,
             code as bank_code
         FROM bank
     """
-
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
-
     return df
+
 
 def get_valid_deposits():
     deposit_df = get_deposits()
@@ -365,10 +426,12 @@ def clean_deposit_df(deposit_df):
 
     return deposit_df
 
+
 def match(word,string):
     import re
     match_string = r'\b' + word + r'\b'
     return bool(re.search(match_string, string))
+
 
 def filter_vtb(x):
     cd1 = (x['bank_code'] == VTB_CODE.lower())
@@ -377,12 +440,14 @@ def filter_vtb(x):
     cd3 = match(str(x['ref_code']),str(x['bank_description']))
     return cd1 & cd2 & cd3 
 
+
 def filter_exim(x):
     cd1 = (x['bank_code'] == EXIM_CODE.lower())
     cd2 = (x['amount_x'] == x['amount_y'])
     # cd3 = match(str(x['ref_code']),str(x['bank_reference']).replace('credit','').replace(',','')) & (len(x['ref_code']) >=12)
     cd3 = match(str(x['ref_code']),str(x['bank_description']))
     return cd1 & cd2 & cd3 
+
 
 def get_matched(deposit_df, bank_df):
     import pandas as pd
@@ -406,6 +471,7 @@ def get_matched(deposit_df, bank_df):
 
     return new_merged_df
 
+
 def update_bank_data(merged_df):
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
     print("Updating Online Bank Data: ", merged_df.shape[0])
@@ -424,8 +490,42 @@ def update_bank_data(merged_df):
 
     conn_payment_pg_hook.run(sqls)
 
-def update_OBD(**context):
-    try:
+
+@dag(
+    'auto_deposit_v1.0.0',
+    description='Auto deposit proccessing',
+    schedule_interval='*/1 * * * *', 
+    start_date=datetime(2023, 1, 14), 
+    catchup=False,
+    max_active_runs=1
+)
+def Auto_Deposit():
+    def extract_bank_acc():
+        conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
+
+        rawsql = f"""
+            SELECT 
+                ba.code,
+                ba.login_name as  username,
+                ba.password,
+                ba.account_no,
+                ba.provider,
+                ba.id as bank_account_id ,
+                b.code as bank_code,
+                b.id as bank_id
+            FROM bank_account AS ba 
+            LEFT JOIN bank AS b ON b.id = ba.bank_id 
+            WHERE auto_status = '{BANK_ACC_AUTO_STATUS}' 
+            AND status = '{BANK_ACCOUNT_STATUS_ACTIVE}'
+        """
+                
+        bank_acc_df = conn_payment_pg_hook.get_pandas_df(rawsql)
+          
+        return bank_acc_df.to_dict('records')
+
+
+    @task(max_active_tis_per_dag=1)
+    def update_OBD(bank_acc, **context):
         date_to = datetime.utcnow()
         date_from = date_to - timedelta(hours=3)
 
@@ -438,14 +538,11 @@ def update_OBD(**context):
             date_to = datetime.strptime(context['params']['date_to'], date_format)
 
         print("Updating Onlne Bank Data")
-        update_online_bank_data(date_from, date_to)
+        update_online_bank_data(bank_acc, date_from, date_to, **context)
 
-    except Exception as error:
-        print("An error occurred:", type(error).__name__, "-", error)
-        exit(1)
 
-def auto_deposit(**context):
-    try: 
+    @task(trigger_rule="all_done")
+    def auto_deposit(**context):
         date_to = datetime.utcnow()
         date_from = date_to - timedelta(hours=3)
 
@@ -483,20 +580,11 @@ def auto_deposit(**context):
         
         update_bank_data(merged)
 
-    except Exception as error:
-        print("An error occurred:", type(error).__name__, "-", error)
-        exit(1)
-    
-update_OBD_operator = PythonOperator(
-    task_id='update_online_bank_data',
-    python_callable = update_OBD,
-    dag=dag
-)
 
-auto_deposit_operator = PythonOperator(
-    task_id='auto_deposit',
-    python_callable=auto_deposit,
-    dag=dag
-)
+    updating_OBD = update_OBD.expand(bank_acc=extract_bank_acc())
 
-update_OBD_operator >> auto_deposit_operator
+    auto_deposit_instance = auto_deposit()
+
+    updating_OBD >> auto_deposit_instance
+
+Auto_Deposit()
