@@ -1,5 +1,6 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.providers.apache.hive.hooks.hive import AirflowException
 import pendulum
 
 dag = DAG(
@@ -10,20 +11,20 @@ dag = DAG(
     catchup=False
 )
 
-# Define a Python function to initialize wagers db and pgsoft table
+# Initialize wagers db and pgsoft table
 def init_pgsoft_wager_table():
     from airflow.providers.apache.hive.hooks.hive import HiveServer2Hook
     from airflow.models import Variable
 
-    HIVE_WAREHOUSE_LOCATION = Variable.get('HIVE_WAREHOUSE_LOCATION')
+    HIVE_WAREHOUSE_DIR = Variable.get('HIVE_WAREHOUSE_DIR')
 
     # Create a HiveServer2Hook
     hive_hook = HiveServer2Hook(
-        hive_cli_conn_id='hiveserver2_default',  
+        hiveserver2_conn_id='hive_servicer2_conn_id',  
     )
     
     # Your Hive SQL script
-    create_wagers_db_sql = f"CREATE DATABASE IF NOT EXISTS wagers LOCATION '{HIVE_WAREHOUSE_LOCATION}'"
+    create_wagers_db_sql = f"CREATE DATABASE IF NOT EXISTS wagers LOCATION '{HIVE_WAREHOUSE_DIR}'"
     create_pgsoft_table_sql = """CREATE TABLE IF NOT EXISTS wagers.pgsoft(
             bet_id BIGINT,
             parent_bet_id BIGINT,
@@ -44,7 +45,7 @@ def init_pgsoft_wager_table():
             create_at TIMESTAMP,
             update_at TIMESTAMP
         ) 
-        PARTITIONED BY ( year INT, quarter INT )
+        PARTITIONED BY ( year INT, month INT )
         STORED AS PARQUET
         """
 
@@ -56,24 +57,23 @@ def init_pgsoft_wager_table():
 def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
     import logging
     import requests
-    import sys
     import pandas as pd
     from datetime import datetime 
     from airflow.models import Variable
     from airflow.providers.apache.hive.hooks.hive import HiveServer2Hook
 
     # Extract Variables
-    pg_history_url = Variable.get( 'PGSOFT_URL'  )
-    secret_key = Variable.get( 'PGSOFT_KEY'  )
-    operator_token = Variable.get( 'PGSOFT_OPERATOR'  )
+    pg_url = Variable.get( 'PG_URL'  )
+    pg_secret_key = Variable.get( 'PG_SECRECT_KEY'  )
+    pg_operator_token = Variable.get( 'PG_OPERATOR_TOKEN'  )
 
     history_api = '/v2/Bet/GetHistory'
-    url = f"{pg_history_url}{history_api}" 
+    url = f"{pg_url}{history_api}" 
     
     # Fetch From API
     form_data = {
-        "secret_key": secret_key,
-        "operator_token": operator_token,
+        "secret_key": pg_secret_key,
+        "operator_token": pg_operator_token,
         "bet_type": "1",
         "row_version": pgsoft_version,
         "date_from": date_from,
@@ -96,7 +96,7 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
         # Partitioning
         df.betTime = pd.to_datetime(df.betTime) 
         df[ 'year' ] = df['betTime'].dt.year
-        df[ 'quarter' ] = df['betTime'].dt.quarter
+        df[ 'month' ] = df['betTime'].dt.month
 
         # Save to HDFS
         print(" Saving to HDFS ")
@@ -105,14 +105,13 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
         hive_hook = HiveServer2Hook(
             hive_cli_conn_id='hiveserver2_default', schema='wagers' 
         )
-        
-        for row in df.itertuples(index=False):
+
+        for _, row in df.iterrows():
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            rd = row._asdict()
             
             query = f"""INSERT INTO wagers.pgsoft PARTITION (
-                year={rd['year']}, 
-                quarter={rd['quarter']} 
+                year={row['year']}, 
+                 month={row['month']} 
             ) (
                 bet_id,   
                 parent_bet_id,
@@ -133,22 +132,22 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
                 create_at,
                 update_at
             )  VALUES (
-                {rd['betId']},
-                {rd['parentBetId']},
-                '{rd['playerName']}',
-                '{rd['currency']}',
-                {rd['gameId']},
-                {rd['platform']},
-                {rd['betType']},
-                {rd['transactionType']},
-                {rd['betAmount']},
-                {rd['winAmount']},
-                {rd['jackpotRtpContributionAmount']},
-                {rd['jackpotWinAmount']},
-                {rd['balanceBefore']},
-                {rd['balanceAfter']},
-                {rd['rowVersion']},
-                '{rd['betTime']}',
+                {row['betId']},
+                {row['parentBetId']},
+                '{row['playerName']}',
+                '{row['currency']}',
+                {row['gameId']},
+                {row['platform']},
+                {row['betType']},
+                {row['transactionType']},
+                {row['betAmount']},
+                {row['winAmount']},
+                {row['jackpotRtpContributionAmount']},
+                {row['jackpotWinAmount']},
+                {row['balanceBefore']},
+                {row['balanceAfter']},
+                {row['rowVersion']},
+                '{row['betTime']}',
                 '{now}',
                 '{now}'
             )"""
@@ -157,11 +156,11 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
         
     except requests.exceptions.RequestException as err:
         logging.fatal("Request error:", err)
-        sys.exit(1)
+        raise AirflowException
 
     except Exception as Argument:
         logging.fatal(f"Error occurred: {Argument}")
-        sys.exit(1)
+        raise AirflowException
 
 
 init_hive_pgsoft = PythonOperator(
@@ -169,7 +168,6 @@ init_hive_pgsoft = PythonOperator(
     python_callable=init_pgsoft_wager_table,
     dag=dag,
 )
-
 
 download_pgsoft = PythonOperator(
     task_id='download_pgsoft',
@@ -181,6 +179,5 @@ download_pgsoft = PythonOperator(
     },
     dag=dag
 )
-
 
 init_hive_pgsoft >> download_pgsoft
