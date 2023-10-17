@@ -4,7 +4,7 @@ from airflow.providers.apache.hive.hooks.hive import AirflowException
 import pendulum
 
 dag = DAG(
-    'pgsoft_wager-v1.0.0_dag',
+    'pgsoft_wager-v1.0.0',
     description='DAG',
     schedule=None,
     start_date=pendulum.datetime(2021, 1, 1, tz="UTC"),
@@ -40,7 +40,7 @@ def init_pgsoft_wager_table():
             jackpot_win_amount FLOAT,
             balance_before FLOAT,
             balance_after FLOAT,
-            row_version INT,
+            row_version BIGINT,
             bet_time TIMESTAMP,
             create_at TIMESTAMP,
             update_at TIMESTAMP
@@ -54,11 +54,11 @@ def init_pgsoft_wager_table():
     hive_hook.run(sql=create_pgsoft_table_sql)
 
 
-def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
+def fetch_pgsoft_wager(**context):
     import logging
     import requests
     import pandas as pd
-    from datetime import datetime 
+    from datetime import datetime, timedelta
     from airflow.models import Variable
     from airflow.providers.apache.hive.hooks.hive import HiveServer2Hook
 
@@ -66,6 +66,16 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
     pg_url = Variable.get( 'PG_URL'  )
     pg_secret_key = Variable.get( 'PG_SECRECT_KEY'  )
     pg_operator_token = Variable.get( 'PG_OPERATOR_TOKEN'  )
+
+    day_begin = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=60)
+    epoch = datetime.utcfromtimestamp(0)
+    pgsoft_version = int( (day_begin - epoch).total_seconds() * 1000 )
+
+    date_format = "%Y-%m-%d %H:%M:%S" 
+
+    # Taking Optional Date Parameters
+    if 'pgsoft_version' in context['params']:
+        pgsoft_version = context['params']['pgsoft_version']
 
     history_api = '/v2/Bet/GetHistory'
     url = f"{pg_url}{history_api}" 
@@ -76,8 +86,6 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
         "operator_token": pg_operator_token,
         "bet_type": "1",
         "row_version": pgsoft_version,
-        "date_from": date_from,
-        "date_to": date_to,
         "count": "5000"
     }
         
@@ -91,27 +99,41 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
         res_obj = response.json().get('data',[])
         total_data_length = len(res_obj)
         print(f"Total {total_data_length}")
+
+        if total_data_length == 0:
+            print("No data Received ")
+            print(response.json().get('error'))
+
         df = pd.DataFrame(res_obj)
 
         # Partitioning
-        df.betTime = pd.to_datetime(df.betTime) 
-        df[ 'year' ] = df['betTime'].dt.year
-        df[ 'month' ] = df['betTime'].dt.month
+        df['betTime'] = pd.to_datetime(df['betTime'], unit='ms')
+        df['year'] = df['betTime'].dt.year
+        df['month'] = df['betTime'].dt.month
 
         # Save to HDFS
         print(" Saving to HDFS ")
 
         # Create a HiveServer2Hook
         hive_hook = HiveServer2Hook(
-            hive_cli_conn_id='hiveserver2_default', schema='wagers' 
+            hiveserver2_conn_id='hive_servicer2_conn_id', schema='wagers' 
         )
 
-        for _, row in df.iterrows():
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        months = df['month'].unique()
+
+        for month in months:
+            now = datetime.now().strftime(date_format)
+
+            month_df = df[df['month'] == month]
+            month_df = month_df.dropna()
+            month_df = month_df.reset_index(drop=True)
+
+            if month_df.shape[0] == 0:
+                continue
             
             query = f"""INSERT INTO wagers.pgsoft PARTITION (
-                year={row['year']}, 
-                 month={row['month']} 
+                year={month_df['year'].iloc[0]}, 
+                 month={month} 
             ) (
                 bet_id,   
                 parent_bet_id,
@@ -131,29 +153,36 @@ def fetch_pgsoft_wager(pgsoft_version, date_from, date_to):
                 bet_time,
                 create_at,
                 update_at
-            )  VALUES (
-                {row['betId']},
-                {row['parentBetId']},
-                '{row['playerName']}',
-                '{row['currency']}',
-                {row['gameId']},
-                {row['platform']},
-                {row['betType']},
-                {row['transactionType']},
-                {row['betAmount']},
-                {row['winAmount']},
-                {row['jackpotRtpContributionAmount']},
-                {row['jackpotWinAmount']},
-                {row['balanceBefore']},
-                {row['balanceAfter']},
-                {row['rowVersion']},
-                '{row['betTime']}',
-                '{now}',
-                '{now}'
-            )"""
-            
+            )  VALUES """
+
+            for i, row in month_df.iterrows():
+                query += f"""(
+                    {row['betId']},
+                    {row['parentBetId']},
+                    '{row['playerName']}',
+                    '{row['currency']}',
+                    {row['gameId']},
+                    {row['platform']},
+                    {row['betType']},
+                    {row['transactionType']},
+                    {row['betAmount']},
+                    {row['winAmount']},
+                    {row['jackpotRtpContributionAmount']},
+                    {row['jackpotWinAmount']},
+                    {row['balanceBefore']},
+                    {row['balanceAfter']},
+                    {row['rowVersion']},
+                    '{row['betTime']}',
+                    '{now}',
+                    '{now}'
+                )"""
+
+                if i != month_df.shape[0] - 1:
+                    query += """,
+                    """
+
             hive_hook.run(sql=query)
-        
+
     except requests.exceptions.RequestException as err:
         logging.fatal("Request error:", err)
         raise AirflowException
@@ -172,11 +201,6 @@ init_hive_pgsoft = PythonOperator(
 download_pgsoft = PythonOperator(
     task_id='download_pgsoft',
     python_callable=fetch_pgsoft_wager,
-    op_kwargs={
-        "pgsoft_version": "{{ dag_run.conf['pgsoft_version']}}",
-        "date_from": "{{ dag_run.conf['date_from']}}",
-        "date_to": "{{ dag_run.conf['date_to']}}"
-    },
     dag=dag
 )
 

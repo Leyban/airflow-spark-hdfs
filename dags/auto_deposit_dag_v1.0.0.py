@@ -3,13 +3,16 @@ from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import  datetime,timedelta
 
-# Online Bank Data URLs
+# Online Bank Data URLs TMO
 VTB_TMO_URL = 'https://api.louismmoo.com/api/viettinbank/transactions' 
 ACB_TMO_URL = 'https://api.louismmoo.com/api/acb/transactions-latest'
 BIDV_TMO_URL = 'https://api.louismmoo.com/api/bidv/get-transaction'
 VCB_TMO_URL = 'https://api.louismmoo.com/api/vcb/transactions'
 EXIM_TMO_URL = 'https://api.louismmoo.com/api/eximbank/transactions'
 MBBANK_TMO_URL = 'https://api.louismmoo.com/api/mbbank/transactions'
+
+# Online Bank Data URLs TMO
+VCB_ATT_URL = 'http://167.71.208.49/api/history'
 
 # Providers
 PROVIDER_NONE = 0
@@ -38,8 +41,8 @@ TIMO_CODE = 'TIMO'
 EXIM_CODE = 'EXIM'
 
 # Payment Types
-TRANSACTION_PREFIX_DLBT = "DLBT"
-TRANSACTION_PREFIX_DLBT60 = "DLBT60"
+PAYMENT_METHOD_CODE_LBT = "DLBT"
+PAYMENT_METHOD_CODE_LBT60 = "DLBT60"
 DEFAULT_CURRENCY = "VND"
 
 BANK_ACCOUNT_STATUS_ACTIVE = 1
@@ -53,7 +56,8 @@ DEPOSIT_LOG_TABLE ='deposit_log'
 
 DEPOSIT_STATUS_PROCESSING = 1
 
-def get_old_online_bank_df(date_from, date_to):
+
+def get_old_online_bank_df(bank_acc = None, date_from = None, date_to = None):
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
 
     rawsql = """
@@ -62,13 +66,24 @@ def get_old_online_bank_df(date_from, date_to):
         FROM online_bank_data as d
     """
 
-    begin_str = date_from.strftime("%m/%d/%Y")
-    end_str = date_to.strftime("%m/%d/%Y")
+    params = []
 
-    rawsql += f"""
-        WHERE CAST (transaction_date AS DATE) >= '{begin_str}' 
-        AND CAST (transaction_date AS DATE) <= '{end_str}' 
-    """
+    if date_from != None:
+        begin_str = date_from.strftime("%m/%d/%Y")
+        params.append(f" CAST (transaction_date AS DATE) >= '{begin_str}' ")
+
+    if date_to != None:
+        end_str = date_to.strftime("%m/%d/%Y")
+        params.append(f" CAST (transaction_date AS DATE) <= '{end_str}' ")
+
+    if bank_acc != None:
+        params.append(f" bank_id = {bank_acc['bank_id']} ")
+        params.append(f" bank_account_id = {bank_acc['bank_account_id']} ")
+
+    if len(params) > 0:
+        rawsql += " WHERE "
+        separator = " AND "
+        rawsql += separator.join(param for param in params)
 
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
 
@@ -93,19 +108,19 @@ def fetch_EXIM_TMO_data(payload, bank_acc, **context):
     import requests
     import pandas as pd
     
-    req = requests.post(
+    res = requests.post(
         EXIM_TMO_URL, 
         data = payload
     )
 
-    if req.json().get('success') == False:
+    if res.json().get('success') == False:
         print(f"An Error Occurred when fetching {bank_acc['bank_code'].upper()} api")
-        print(req.json().get('message'))
-        error_details = { "Account Name": payload['username'], "Account Number": payload['accountNumber'], "Provider": Provider_Value[bank_acc['provider']] }
-        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, req.json().get('message'), **context)
+        print(res.json().get('message'))
+        error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
+        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
         raise AirflowSkipException
 
-    result = req.json().get('data',{}).get('currentHistoryList', [])
+    result = res.json().get('data',{}).get('currentHistoryList', [])
     
     trans_df = pd.DataFrame.from_records(result)  
 
@@ -129,19 +144,19 @@ def fetch_ACB_TMO_data(payload, bank_acc, **context):
     import requests
     import pandas as pd
     
-    req =requests.post(
+    res =requests.post(
         ACB_TMO_URL, 
         data = payload
     )
 
-    if req.json().get('success') == False:
+    if res.json().get('success') == False:
         print(f"An Error Occurred when fetching {bank_acc['bank_code'].upper()} api")
-        print(req.json().get('message'))
-        error_details = { "Account Name": payload['username'], "Account Number": payload['accountNumber'], "Provider": Provider_Value[bank_acc['provider']] }
-        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, req.json().get('message'), **context)
+        print(res.json().get('message'))
+        error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
+        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
         raise AirflowSkipException
 
-    result = req.json().get('transactions', [])
+    result = res.json().get('transactions', [])
     
     trans_df = pd.DataFrame.from_records(result)
 
@@ -166,19 +181,19 @@ def fetch_VTB_TMO_data(payload, bank_acc, **context):
     import requests
     import pandas as pd
     
-    req =requests.post(
+    res =requests.post(
         VTB_TMO_URL, 
         data = payload
     )
 
-    if req.json().get('success') == False:
+    if res.json().get('success') == False:
         print(f"An Error Occurred when fetching {bank_acc['code'].upper()} api")
-        print(req.json().get('message'))
-        error_details = { "Account Name": payload['username'], "Account Number": payload['accountNumber'], "Provider": Provider_Value[bank_acc['provider']] }
-        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, req.json().get('message'), **context)
+        print(res.json().get('message'))
+        error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
+        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
         raise AirflowSkipException
 
-    result = req.json().get('data',{}).get('transactions', [])
+    result = res.json().get('data',{}).get('transactions', [])
     
     trans_df = pd.DataFrame.from_records(result)
 
@@ -194,6 +209,46 @@ def fetch_VTB_TMO_data(payload, bank_acc, **context):
     })
 
     new_bank_df['transaction_date'] = pd.to_datetime(new_bank_df['transaction_date'], format='%d-%m-%Y %H:%M:%S')
+
+    return new_bank_df
+
+
+def fetch_VCB_ATT_data(payload, bank_acc, **context):
+    import requests
+    import pandas as pd
+    
+    res =requests.get(
+        VCB_ATT_URL, 
+        params = payload
+    )
+
+    if not res.ok:
+        print(f"An Error Occurred when fetching {bank_acc['code'].upper()} api")
+        print(res.content)
+        error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
+        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.content, **context)
+        raise AirflowSkipException
+
+    result = res.json().get('data',[])
+    
+    trans_df = pd.DataFrame.from_records(result)
+
+    if trans_df.empty:
+        return trans_df
+
+    trans_df = trans_df[trans_df['type'] == "deposit"]
+
+    new_bank_df = trans_df.loc[:, ['referenceNumber','memo','money','createdAt']]
+    new_bank_df = new_bank_df.rename(columns={
+        'referenceNumber': 'bank_reference',
+        'memo':'bank_description',
+        'money':'net_amount',
+        'createdAt':'transaction_date'
+    })
+
+    new_bank_df['transaction_date'] = pd.to_datetime(new_bank_df['transaction_date'], unit='s')
+    new_bank_df['net_amount'] = new_bank_df['net_amount'].astype(str).apply(lambda x: x.replace(',', ''))
+    new_bank_df['net_amount'] = new_bank_df['net_amount'].astype(str).apply(lambda x: x.replace('+', ''))
 
     return new_bank_df
 
@@ -220,6 +275,7 @@ def update_old_bank_data(new_bank_df, old_bank_df, row):
     old_bank_df = pd.concat([old_bank_df, bank_df])
 
     return old_bank_df
+
 
 def notify_discord(title, details=None, error_message=None, **context):
     from airflow.models import Variable
@@ -270,7 +326,7 @@ def update_ACB_TMO(bank_acc, maxRows, **context):
     date_from = trans_df['transaction_date'].min()
     date_to = trans_df['transaction_date'].max()
 
-    old_bank_df = get_old_online_bank_df(date_from, date_to)
+    old_bank_df = get_old_online_bank_df(date_from=date_from, date_to=date_to)
 
     update_old_bank_data(trans_df, old_bank_df, bank_acc)
 
@@ -278,7 +334,7 @@ def update_ACB_TMO(bank_acc, maxRows, **context):
 def update_VTB_TMO(bank_acc, date_from, date_to, **context):
     print(f"Fetching {bank_acc['bank_code'].upper()} Data via TMO")
 
-    old_bank_df = get_old_online_bank_df(date_from, date_to)
+    old_bank_df = get_old_online_bank_df(date_from=date_from, date_to=date_to)
 
     begin_str = date_from.strftime("%d/%m/%Y")
     end_str = date_to.strftime("%d/%m/%Y")
@@ -313,7 +369,7 @@ def update_VTB_TMO(bank_acc, date_from, date_to, **context):
 def update_EXIM_TMO(bank_acc, date_from, date_to, **context):
     print(f"Fetching {bank_acc['bank_code'].upper()} Data via TMO")
 
-    old_bank_df = get_old_online_bank_df(date_from, date_to)
+    old_bank_df = get_old_online_bank_df(date_from=date_from, date_to=date_to)
 
     begin_str = date_from.strftime("%d/%m/%Y")
     end_str = date_to.strftime("%d/%m/%Y")
@@ -334,6 +390,39 @@ def update_EXIM_TMO(bank_acc, date_from, date_to, **context):
 
     update_old_bank_data(trans_df, old_bank_df, bank_acc)
 
+
+def update_VCB_ATT(bank_acc, **context):
+    from airflow.models import Variable
+    
+    print(f"Fetching {bank_acc['bank_code'].upper()} Data via ATT")
+
+    accessToken = Variable.get("VCB_ATT_ACCESS_TOKEN")
+    per_page = 100
+
+    payload = {
+        "accountNumber":bank_acc['account_no'],
+        "accessToken": accessToken,
+        "limit": per_page,
+    }
+
+    old_bank_df = get_old_online_bank_df(bank_acc=bank_acc)
+
+    page = 0
+    old_data_count = -1
+
+    while old_data_count < old_bank_df.shape[0]:
+        old_data_count = old_bank_df.shape[0]
+        payload["offset"] = page * per_page
+
+        print(payload)
+        trans_df = fetch_VCB_ATT_data(payload, bank_acc, **context)
+
+        if trans_df.empty:
+            print("No New Data Received")
+            break
+
+        old_bank_df = update_old_bank_data(trans_df, old_bank_df, bank_acc)
+        page += 1
 
 
 def update_online_bank_data(bank_acc, date_from, date_to, maxRows, **context):
@@ -392,6 +481,12 @@ def update_online_bank_data(bank_acc, date_from, date_to, maxRows, **context):
             print("Invalid Bank Code: ", bank_acc['bank_code'])
             raise AirflowSkipException
 
+    if bank_acc['provider'] == PROVIDER_ATT:
+
+        if bank_acc['bank_code'].upper() == VCB_CODE:
+            update_VCB_ATT(bank_acc, **context)
+
+
 def get_online_bank_data(begin, end):
     import pandas as pd
 
@@ -426,6 +521,7 @@ def get_deposits():
             transaction_id,
             ref_code,
             net_amount as amount,
+            gross_amount,
             status,
             payment_method_id
         FROM deposit
@@ -443,7 +539,7 @@ def get_payment_methods():
             pm.id as payment_method_id
         FROM payment_method AS pm
 		LEFT JOIN payment_method_currency AS pmc ON pmc.payment_method_id = pm.id
-        WHERE (transaction_prefix = '{TRANSACTION_PREFIX_DLBT}' OR transaction_prefix = '{TRANSACTION_PREFIX_DLBT60}') 
+        WHERE (pm.code = '{PAYMENT_METHOD_CODE_LBT}' OR pm.code = '{PAYMENT_METHOD_CODE_LBT60}') 
         AND pmc.currency = '{DEFAULT_CURRENCY}'
     """
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
@@ -506,6 +602,11 @@ def match(word,string):
     match_string = r'\b' + word + r'\b'
     return bool(re.search(match_string, string))
 
+def filter_vcb(x):
+    cd1 = (x['bank_code'].upper() == VCB_CODE)
+    cd2 = (x['amount_x'] == x['amount_y'])
+    cd3 = match(str(x['ref_code']),str(x['bank_description']))
+    return cd1 & cd2 & cd3 
 
 def filter_acb(x):
     cd1 = (x['bank_code'].upper() == ACB_CODE)
@@ -540,7 +641,8 @@ def get_matched(deposit_df, bank_df):
     
     conditions = lambda x: filter_vtb(x) \
         | filter_exim(x) \
-        | filter_acb(x)
+        | filter_acb(x)  \
+        | filter_vcb(x)
 
     merged['result'] = merged.apply(lambda x: conditions(x), axis=1) 
     new_merged_df = merged[merged['result']]
@@ -561,8 +663,9 @@ def update_bank_data(merged_df):
     for _, row in merged_df.iterrows():
         update_online_bank_sql = f""" 
             UPDATE {ONLINE_BANK_ACCOUNT_TABLE} 
-            SET deposit_id = '{row['deposit_id']}' ,
-                transaction_id = '{row['transaction_id']}'
+            SET deposit_id = '{row['deposit_id']}',
+                transaction_id = '{row['transaction_id']}',
+                gross_amount = '{row['gross_amount']}'
             WHERE id ='{row['online_bank_data_id']}' 
         """
 
@@ -590,7 +693,7 @@ def Auto_Deposit():
                 ba.password,
                 ba.account_no,
                 ba.provider,
-                ba.id as bank_account_id ,
+                ba.id as bank_account_id,
                 b.code as bank_code,
                 b.id as bank_id
             FROM bank_account AS ba 
