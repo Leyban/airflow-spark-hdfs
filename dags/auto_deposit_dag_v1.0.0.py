@@ -96,7 +96,7 @@ def compute_hash(row):
     hash_input = (
         str( row['bank_reference'] ) +
         str( row['bank_description'] ) +
-        str( row['net_amount'] ) +
+        str( row['amount'] ) +
         str( row['transaction_date'].day ) +
         str( row['transaction_date'].month ) +
         str( row['transaction_date'].year )
@@ -117,7 +117,7 @@ def fetch_EXIM_TMO_data(payload, bank_acc, **context):
         print(f"An Error Occurred when fetching {bank_acc['bank_code'].upper()} api")
         print(res.json().get('message'))
         error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
-        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
+        notify_skype(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
         raise AirflowSkipException
 
     result = res.json().get('data',{}).get('currentHistoryList', [])
@@ -131,7 +131,6 @@ def fetch_EXIM_TMO_data(payload, bank_acc, **context):
     new_bank_df = new_bank_df.rename(columns={
         'tranRef': 'bank_reference',
         'tranDesc':'bank_description',
-        'amount':'net_amount',
         'tranTimeNoFormat':'transaction_date'
     })
  
@@ -153,7 +152,7 @@ def fetch_ACB_TMO_data(payload, bank_acc, **context):
         print(f"An Error Occurred when fetching {bank_acc['bank_code'].upper()} api")
         print(res.json().get('message'))
         error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
-        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
+        notify_skype(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
         raise AirflowSkipException
 
     result = res.json().get('transactions', [])
@@ -167,12 +166,12 @@ def fetch_ACB_TMO_data(payload, bank_acc, **context):
     new_bank_df = new_bank_df.rename(columns={
         'Reference': 'bank_reference',
         'Description':'bank_description',
-        'Amount':'net_amount',
+        'Amount':'amount',
         'TransactionDateFull':'transaction_date'
     })
 
     new_bank_df['transaction_date'] = pd.to_datetime(new_bank_df['transaction_date'], format='%d/%m/%Y %H:%M:%S')
-    new_bank_df['net_amount'] = new_bank_df['net_amount'].str.replace(',', '')
+    new_bank_df['amount'] = new_bank_df['amount'].str.replace(',', '')
 
     return new_bank_df
 
@@ -190,7 +189,7 @@ def fetch_VTB_TMO_data(payload, bank_acc, **context):
         print(f"An Error Occurred when fetching {bank_acc['code'].upper()} api")
         print(res.json().get('message'))
         error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
-        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
+        notify_skype(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.json().get('message'), **context)
         raise AirflowSkipException
 
     result = res.json().get('data',{}).get('transactions', [])
@@ -204,7 +203,7 @@ def fetch_VTB_TMO_data(payload, bank_acc, **context):
     new_bank_df = new_bank_df.rename(columns={
         'trxId': 'bank_reference',
         'remark':'bank_description',
-        'amount':'net_amount',
+        'amount':'amount',
         'processDate':'transaction_date'
     })
 
@@ -226,7 +225,7 @@ def fetch_VCB_ATT_data(payload, bank_acc, **context):
         print(f"An Error Occurred when fetching {bank_acc['code'].upper()} api")
         print(res.content)
         error_details = { "Account Name": bank_acc['username'], "Account Number": bank_acc['account_no'], "Provider": Provider_Value[bank_acc['provider']] }
-        notify_discord(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.content, **context)
+        notify_skype(f"{bank_acc['code'].upper()} | {Provider_Value[bank_acc['provider']]} Fetching Failed", error_details, res.content, **context)
         raise AirflowSkipException
 
     result = res.json().get('data',[])
@@ -242,13 +241,13 @@ def fetch_VCB_ATT_data(payload, bank_acc, **context):
     new_bank_df = new_bank_df.rename(columns={
         'referenceNumber': 'bank_reference',
         'memo':'bank_description',
-        'money':'net_amount',
+        'money':'amount',
         'createdAt':'transaction_date'
     })
 
     new_bank_df['transaction_date'] = pd.to_datetime(new_bank_df['transaction_date'], unit='s')
-    new_bank_df['net_amount'] = new_bank_df['net_amount'].astype(str).apply(lambda x: x.replace(',', ''))
-    new_bank_df['net_amount'] = new_bank_df['net_amount'].astype(str).apply(lambda x: x.replace('+', ''))
+    new_bank_df['amount'] = new_bank_df['amount'].astype(str).apply(lambda x: x.replace(',', ''))
+    new_bank_df['amount'] = new_bank_df['amount'].astype(str).apply(lambda x: x.replace('+', ''))
 
     return new_bank_df
 
@@ -277,35 +276,28 @@ def update_old_bank_data(new_bank_df, old_bank_df, row):
     return old_bank_df
 
 
-def notify_discord(title, details=None, error_message=None, **context):
+def notify_skype(title, details=None, error_message=None, **context):
     from airflow.models import Variable
-    import requests
-    import json
+    from skpy import Skype
+
+    username = Variable.get('SKYPE_USERNAME')
+    password = Variable.get('SKYPE_PASSWORD')
+    group_id = Variable.get('SKYPE_GROUP_ID')
+
+    sk = Skype(username,password)
+    ch = sk.chats[group_id]
 
     log_url = context.get("task_instance").log_url
 
-    description = f">>>  [**{title}:**]({log_url}) -- *{datetime.now()}*"
+    message = f"[{title}]({log_url}) -- {datetime.now()}"
 
     if details != None:
-        description += "```"
         for k in details:
-            description += f"{k}: {details[k]}\n"
+            message += f"\n{k}: {details[k]}"
         if error_message != None:
-            description = description + f"Error Message: {error_message}"
-        description += "```"
+            message = message + f"Error Message: {error_message}"
     
-    details = {
-        "embeds": [
-            {
-                "title": "Auto Deposit DAG",
-                "description": description
-            }
-        ]
-    }
-    
-    requests.post(Variable.get('DISCORD_WEBHOOK_URL'), json.dumps(details), headers={"Content-Type": "application/json"}
-)
-
+    ch.sendMsg(message)
 
 def update_ACB_TMO(bank_acc, maxRows, **context):
     print(f"Fetching {bank_acc['bank_code'].upper()} Data via TMO")
@@ -436,7 +428,7 @@ def update_online_bank_data(bank_acc, date_from, date_to, maxRows, **context):
             "Provider": Provider_Value[bank_acc['provider']]
         }
 
-        notify_discord(f"{bank_acc['code'].upper()} | Invalid Bank Account", error_details, **context)
+        notify_skype(f"{bank_acc['code'].upper()} | Invalid Bank Account", error_details, **context)
         raise AirflowSkipException
 
     print( f" '{bank_acc['username']}' '{bank_acc['password']}' '{bank_acc['account_no']}' '{bank_acc['bank_code']}' '{date_from}' '{date_to}' ")
@@ -498,7 +490,7 @@ def get_online_bank_data(begin, end):
             bank_id,
             bank_reference,
             bank_description,
-            net_amount as amount
+            amount
         FROM online_bank_data as d
         WHERE deposit_id  = 0
         AND CAST (transaction_date as DATE) >= '{begin}'
@@ -506,7 +498,6 @@ def get_online_bank_data(begin, end):
     """
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
 
-    df = df.rename(columns={'net_amount': 'amount'})
     df['amount'] = pd.to_numeric(df['amount']) 
 
     return df
@@ -521,26 +512,12 @@ def get_deposits():
             transaction_id,
             ref_code,
             net_amount as amount,
-            gross_amount,
             status,
-            payment_method_id
+            payment_method_code
         FROM deposit
         WHERE currency = '{DEFAULT_CURRENCY}'
+        AND (payment_method_code = '{PAYMENT_METHOD_CODE_LBT}' OR payment_method_code = '{PAYMENT_METHOD_CODE_LBT60}') 
         AND status = {DEPOSIT_STATUS_PROCESSING}
-    """
-    df = conn_payment_pg_hook.get_pandas_df(rawsql)
-    return df
-
-
-def get_payment_methods():
-    conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
-    rawsql = f"""
-        SELECT 
-            pm.id as payment_method_id
-        FROM payment_method AS pm
-		LEFT JOIN payment_method_currency AS pmc ON pmc.payment_method_id = pm.id
-        WHERE (pm.code = '{PAYMENT_METHOD_CODE_LBT}' OR pm.code = '{PAYMENT_METHOD_CODE_LBT60}') 
-        AND pmc.currency = '{DEFAULT_CURRENCY}'
     """
     df = conn_payment_pg_hook.get_pandas_df(rawsql)
     return df
@@ -574,10 +551,6 @@ def get_banks():
 
 def get_valid_deposits():
     deposit_df = get_deposits()
-
-    payment_method_df = get_payment_methods() 
-
-    merged_df = deposit_df.merge(payment_method_df, 'left', 'payment_method_id')
 
     bank_acc_df = get_bank_accounts() 
 
@@ -665,7 +638,7 @@ def update_bank_data(merged_df):
             UPDATE {ONLINE_BANK_ACCOUNT_TABLE} 
             SET deposit_id = '{row['deposit_id']}',
                 transaction_id = '{row['transaction_id']}',
-                gross_amount = '{row['gross_amount']}'
+                deposit_amount = '{row['amount_x']}'
             WHERE id ='{row['online_bank_data_id']}' 
         """
 
@@ -710,7 +683,7 @@ def Auto_Deposit():
     @task(max_active_tis_per_dag=1)
     def update_OBD(bank_acc, **context):
         date_to = datetime.utcnow()
-        date_from = date_to - timedelta(hours=3)
+        date_from = date_to - timedelta(days=60)
         maxRows = 200
 
         # Taking Optional Date Parameters
@@ -731,7 +704,7 @@ def Auto_Deposit():
     @task(trigger_rule="all_done")
     def auto_deposit(**context):
         date_to = datetime.utcnow()
-        date_from = date_to - timedelta(hours=3)
+        date_from = date_to - timedelta(days=60)
 
         # Taking Optional Date Parameters
         date_format = '%Y-%m-%d %H:%M:%S'

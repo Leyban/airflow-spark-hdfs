@@ -98,29 +98,29 @@ def fetch_pgsoft_wager(**context):
 
         for _, row in df.iterrows():
 
-            query = f"""UPDATE wagers.pgsoft_by_id 
-                SET player_name = ?, 
-                    bet_time = ?,
-                    parent_bet_id = ?,
-                    currency = ?,
-                    game_id = ?,
-                    platform = ?,
-                    bet_type = ?,
-                    transaction_type = ?,
-                    bet_amount = ?,
-                    win_amount = ?,
-                    jackpot_rtp_contribution_amount = ?,
-                    jackpot_win_amount = ?,
-                    balance_before = ?,
-                    balance_after = ?,
-                    row_version = ?,
-                    create_at = ?,
-                    update_at = ?
-                WHERE bet_id_range = ?
-                AND bet_id = ?
-               """
+            query = f"""INSERT INTO wagers.pgsoft_by_id (
+                bet_id,   
+                player_name, 
+                bet_time,
+                parent_bet_id,
+                currency,
+                game_id,
+                platform,
+                bet_type,
+                transaction_type,
+                bet_amount,
+                win_amount,
+                jackpot_rtp_contribution_amount,
+                jackpot_win_amount,
+                balance_before,
+                balance_after,
+                row_version,
+                create_at,
+                update_at
+            )  VALUES (?{",?" * 17}) IF NOT EXISTS;"""
 
             parameters = [
+               row['betId'],
                row['playerName'],
                row['betTime'],
                row['parentBetId'],
@@ -138,16 +138,11 @@ def fetch_pgsoft_wager(**context):
                row['rowVersion'],
                now,
                now,
-               "Egg",
-               row['betId'],
                ]
 
             prepared_query = conn.prepare(query)
-            test = conn.execute(prepared_query, parameters)
-            print("@@@@@@@@@@@@@@@@@@@@@@@@@@")
-            print(type(test))
-            for t in test:
-                print(t)
+            conn.execute(prepared_query, parameters)
+
 
     except requests.exceptions.RequestException as err:
         print("Request error:", err)
@@ -156,7 +151,6 @@ def fetch_pgsoft_wager(**context):
     except Exception as Argument:
         print(f"Error occurred: {Argument}")
         raise AirflowException
-
 
 def get_migrated_partition():
     from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -177,6 +171,8 @@ def get_migrated_partition():
 def migrate_pgsoft_wager():
     from datetime import datetime
     from airflow.providers.apache.cassandra.hooks.cassandra import CassandraHook
+
+    
 
     try:
         cassandra_hook = CassandraHook( cassandra_conn_id='cassandra_conn_id' )
@@ -250,4 +246,4 @@ migrate_pgsoft = PythonOperator(
     dag=dag
 )
 
-download_pgsoft 
+download_pgsoft >> migrate_pgsoft

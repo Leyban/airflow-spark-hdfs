@@ -2,6 +2,7 @@ package pgsoft
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -55,6 +56,7 @@ func runQuery() []BetDetail {
 }
 
 func HandlePGSoft(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Pgsoft")
 	result := runQuery()
 	response := Response{
 		Data: result,
