@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
-
 from airflow import DAG
-from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
 
 
 default_args= {
@@ -10,36 +9,20 @@ default_args= {
     'retry_delay': timedelta(minutes=2)
 }
 
+def context_test(**context):
+    print(context)
+    print('@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@')
+    print(context['ds_nodash'])
+
 with DAG(
-    dag_id='our_first_dag_v6',
+    dag_id='context_test',
     default_args=default_args,
-    description='This is our first dag that we write',
+    description='just testing the context thingy',
     start_date=datetime(2021, 7, 29, 2,),
-    schedule_interval='@daily'
+    schedule_interval=None
 ) as dag:
-    task1 = BashOperator(
+    task1 = PythonOperator(
         task_id='first_task',
-        bash_command="echo hello world this is the first task"
+        python_callable=context_test
     )
-    
-    task2 = BashOperator(
-        task_id='second_task',
-        bash_command="echo I am the second task that will run after task1"
-    )    
-    
-    task3 = BashOperator(
-        task_id='third_task',
-        bash_command="echo I am the third task that will run after task3"
-    )
-    
-    # Task dependency method 1
-    # task1.set_downstream(task2)
-    # task1.set_downstream(task3)
-    
-    # Task dependency method 2
-    # task1 >> task2
-    # task1 >> task3
-    
-    # Task dependency method 2
-    task1 >> [task2, task3]
-    
+    task1

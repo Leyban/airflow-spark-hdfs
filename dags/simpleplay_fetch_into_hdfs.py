@@ -5,7 +5,6 @@ from airflow.operators.python import PythonOperator
 import requests
 
 import base64
-from pyDes import des, ECB, PAD_PKCS5
 import hashlib
 
 import time
@@ -52,6 +51,7 @@ url = 'http://localhost:8800/'
 # --------------- Encription ----------------------
 
 def DESEnCode(mystr, deskey):
+    from pyDes import des, ECB, PAD_PKCS5
     mytext = mystr.encode('utf-8')
     key = deskey.encode('utf-8')
     iv = deskey.encode('utf-8')

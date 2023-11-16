@@ -432,6 +432,74 @@ func get_sabacv_members() []string {
 	return result
 }
 
+func get_digitain_ids() []int64 {
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=collectorDB sslmode=disable")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	rawSql := `
+        SELECT DISTINCT partner_client_id
+        FROM digitain_order_wager
+    `
+
+	var result []int64
+
+	err = db.Select(&result, rawSql)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return result
+}
+
+type DigitainUser struct {
+	Id        int64  `db:"id"`
+	LoginName string `db:"login_name"`
+	Currency  string `db:"currency"`
+	CreateAt  string `db:"created_at"`
+}
+
+func create_dummy_digitain_user(id int64) error {
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=collectorDB sslmode=disable")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	rawSql := `
+        INSERT INTO digitain_user(
+            id,
+            login_name,
+            currency,
+            created_at
+        ) VALUES (
+            :id,
+            :login_name,
+            :currency,
+            :created_at
+        )
+        ON CONFLICT DO NOTHING
+    `
+
+	entity := DigitainUser{
+		Id:        int64(RandInt(10000000)),
+		LoginName: RandAlphanumeric(15),
+		Currency:  RandSelect[string]([]string{"VND", "THB", "RMB"}),
+		CreateAt:  now,
+	}
+
+	_, err = db.NamedExec(rawSql, entity)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return nil
+}
+
 func updateMembers() {
 	allMembers := []string{}
 
@@ -484,6 +552,15 @@ func updateMembers() {
 				log.Fatal(err)
 			}
 
+		}
+	}
+
+	digitain_ids := get_digitain_ids()
+	fmt.Println("digitain: ", len(digitain_ids))
+	for _, id := range digitain_ids {
+		err := create_dummy_digitain_user(id)
+		if err != nil {
+			log.Fatal(err)
 		}
 	}
 }

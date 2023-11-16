@@ -3,7 +3,7 @@ WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3
 AND durable_writes = true;
 
 CREATE TABLE IF NOT EXISTS wagers.pgsoft_by_id (
-    bet_id_range TEXT,
+    bet_id_range BIGINT,
     bet_id BIGINT,
     parent_bet_id BIGINT,
     player_name TEXT,
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS wagers.pgsoft_by_id (
 
 CREATE TABLE IF NOT EXISTS wagers.pgsoft_by_member (
     player_name TEXT,
+    bet_time TIMESTAMP,
     bet_id BIGINT,
     parent_bet_id BIGINT,
     currency TEXT,
@@ -41,10 +42,9 @@ CREATE TABLE IF NOT EXISTS wagers.pgsoft_by_member (
     balance_before FLOAT,
     balance_after FLOAT,
     row_version BIGINT,
-    bet_time TIMESTAMP,
     create_at TIMESTAMP,
     update_at TIMESTAMP,
-    PRIMARY KEY (player_name, bet_id)
+    PRIMARY KEY (player_name, bet_time, bet_id)
 );
 
 CREATE TABLE IF NOT EXISTS wagers.pgsoft_by_date (
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS wagers.pgsoft_by_date (
     bet_time TIMESTAMP,
     create_at TIMESTAMP,
     update_at TIMESTAMP,
-    month_year text,
-    PRIMARY KEY (month_year, bet_time, bet_id)
+    year_month INT,
+    PRIMARY KEY (year_month, bet_time, bet_id)
 );
 

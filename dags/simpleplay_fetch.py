@@ -7,7 +7,6 @@ import requests
 import logging
 
 import base64
-from pyDes import des, ECB, PAD_PKCS5
 import hashlib
 import urllib.parse
 
@@ -27,6 +26,7 @@ SP_Url = 'http://localhost:8800'
 conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
 
 def DESEnCode(mystr, deskey):
+    from pyDes import des, ECB, PAD_PKCS5
     mytext = mystr.encode('utf-8')
     key = deskey.encode('utf-8')
     iv = deskey.encode('utf-8')

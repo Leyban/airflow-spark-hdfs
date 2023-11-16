@@ -35,4 +35,17 @@ with DAG('xcom_dag', schedule_interval='@daily', default_args=default_args, catc
         python_callable=_choose_best_model
     )
 
+    cdls = BashOperator(
+            task_id='cdls',
+            bash_command='ls ../'
+            )
+
+    ls = BashOperator(
+            task_id='ls',
+            bash_command='ls'
+            )
+
     downloading_data >> training_model_task >> choose_model
+
+    ls
+    cdls

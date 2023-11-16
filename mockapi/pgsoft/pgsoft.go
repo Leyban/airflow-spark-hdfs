@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
@@ -37,7 +40,7 @@ type Response struct {
 }
 
 func runQuery() []BetDetail {
-	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=dummyDB sslmode=disable")
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=collectorDB sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -45,11 +48,23 @@ func runQuery() []BetDetail {
 
 	var records []BetDetail
 
-	query := "SELECT * FROM pg_dummy"
+	query := "SELECT * FROM pgsoft_wager"
 
 	err = db.Select(&records, query)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	for i, r := range records {
+		betTime, _ := time.Parse(time.RFC3339Nano, *r.BetTime)
+		epochMs := betTime.UnixNano() / 1e6
+
+		s := rand.NewSource(time.Now().UnixNano())
+		r := rand.New(s)
+
+		epochMs -= int64(r.Intn(1e12))
+		epochStr := strconv.Itoa(int(epochMs))
+		records[i].BetTime = &epochStr
 	}
 
 	return records

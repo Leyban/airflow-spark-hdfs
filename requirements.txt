@@ -1,4 +1,3 @@
-pyDes
 # sasl
 # thrift
 # thrift-sasl
@@ -10,3 +9,4 @@ apache-airflow-providers-apache-hive
 apache-airflow-providers-apache-cassandra
 psycopg2
 skpy
+pycryptodome
