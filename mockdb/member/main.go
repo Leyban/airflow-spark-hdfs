@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -188,7 +189,7 @@ func createDummyMember(login_name string) error {
 	entity := &Member{
 		// AffiliateID:       *RandInt64(12),
 		Uuid:      uuid.New().String(),
-		LoginName: login_name,
+		LoginName: strings.ToLower(login_name),
 		Password:  RandString(24),
 		Salt:      RandString(24),
 		// Avatar:            *string,
@@ -565,6 +566,133 @@ func updateMembers() {
 	}
 }
 
+type MemberAccount struct {
+	ID                       int64   `db:"id" json:"id,omitempty"`
+	MemberID                 int64   `db:"member_id" json:"member_id"`
+	LoginName                string  `db:"login_name" json:"login_name"`
+	Currency                 string  `db:"currency" json:"currency"`
+	RewardPoint              int64   `db:"reward_point" json:"reward_point"`
+	RewardDateExpired        string  `db:"reward_date_expired" json:"reward_date_expired"`
+	Level                    int     `db:"level" json:"level"`
+	TotalEligibleStakeAmount float64 `db:"total_eligible_stake_amount" json:"total_eligible_stake_amount"`
+	CreateAt                 string  `db:"create_at" json:"create_at"`
+	UpdateAt                 string  `db:"update_at" json:"update_at"`
+	Status                   int     `db:"status" json:"status"`
+}
+
+type WagerDude struct {
+	LoginName string `db:"login_name" json:"login_name"`
+	Currency  string `db:"currency" json:"currency"`
+}
+
+func createMemberAccounts() {
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=rewardDB sslmode=disable")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	collectorDB, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=collectorDB sslmode=disable")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	var wagers = map[string]string{
+		"allbet_wager":     "login_name",
+		"asiagaming_wager": "player_name",
+		"sagaming_wager":   "username",
+		"simpleplay_wager": "username",
+		"pgsoft_wager":     "player_name",
+		"ebet_wager":       "user_name",
+		"bti_wager":        "username",
+		"sabacv_wager":     "vendor_member_id",
+		"saba_wager":       "vendor_member_id",
+		"saba_number":      "vendor_member_id",
+		"saba_virtual":     "vendor_member_id",
+		"tfgaming_wager":   "member_code",
+		"evolution_wager":  "player_id",
+		"genesis_wager":    "user_name",
+		"weworld_wager":    "player_id",
+		// "digitain_order_wager": "login_name",
+	}
+
+	var currencyLess = map[string]bool{
+		"allbet_wager":     false,
+		"asiagaming_wager": false,
+		"sagaming_wager":   true,
+		"simpleplay_wager": true,
+		"pgsoft_wager":     false,
+		"ebet_wager":       true,
+		"bti_wager":        false,
+		"sabacv_wager":     true,
+		"saba_wager":       true,
+		"saba_number":      true,
+		"saba_virtual":     true,
+		"tfgaming_wager":   false,
+		"evolution_wager":  false,
+		"genesis_wager":    true,
+		"weworld_wager":    true,
+		// "digitain_order_wager": false,
+	}
+
+	var allWagerMembers []WagerDude
+	for table, column := range wagers {
+		rawSql := `
+            SELECT 
+                DISTINCT lower(` + column + `) AS login_name, `
+		if currencyLess[table] {
+			rawSql += "'VND' AS currency"
+		} else {
+			rawSql += "currency"
+		}
+		rawSql += " FROM " + table
+
+		var wagerMembers []WagerDude
+
+		err := collectorDB.Select(&wagerMembers, rawSql)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Println(table, ":", len(wagerMembers))
+		allWagerMembers = append(allWagerMembers, wagerMembers...)
+	}
+
+	fmt.Println("Total member accounts:", len(allWagerMembers))
+
+	for i, m := range allWagerMembers {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		entity := MemberAccount{
+			MemberID:                 RandInt64(1000000),
+			LoginName:                m.LoginName,
+			Currency:                 m.Currency,
+			RewardPoint:              RandInt64(1000000),
+			RewardDateExpired:        now,
+			Level:                    RandInt(50),
+			TotalEligibleStakeAmount: rand.Float64(),
+			CreateAt:                 now,
+			UpdateAt:                 now,
+			Status:                   1,
+		}
+
+		rawSql := `
+			INSERT INTO "member_account" (member_id,login_name,currency,reward_point,level,status,create_at,update_at)
+			VALUES(:member_id,:login_name,:currency,:reward_point,:level,:status,:create_at,:update_at)
+        `
+
+		_, err := db.NamedExec(rawSql, entity)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if i%50 == 0 {
+			fmt.Println("Inserted to Member Account", i)
+		}
+	}
+}
+
 func main() {
 	updateMembers()
+	createMemberAccounts()
 }

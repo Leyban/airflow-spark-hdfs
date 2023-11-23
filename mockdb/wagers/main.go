@@ -35,7 +35,7 @@ func main() {
 	}
 	defer db.Close()
 
-	newTime := time.Date(2023, 11, 13, 20, 34, 58, 54612, time.UTC)
+	newTime := time.Date(2023, 11, 19, 20, 34, 58, 54612, time.UTC)
 
 	for table, col := range wagers {
 
