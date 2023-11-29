@@ -355,7 +355,7 @@ def get_member_currency(wager_df) -> DataFrame:
     
 
 def get_allbet_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT 
@@ -368,7 +368,7 @@ def get_allbet_wager(date_from, date_to) -> DataFrame:
         AND bet_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['currency'] = df['currency'].replace("VND2", "VND")
     df['currency'] = df['currency'].replace("CNY", "RMB")
@@ -381,7 +381,7 @@ def get_allbet_wager(date_from, date_to) -> DataFrame:
 
 
 def get_asiagaming_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -395,7 +395,7 @@ def get_asiagaming_wager(date_from, date_to) -> DataFrame:
         AND flag = 1 and game_type_code = 'AGIN' and platform_type <> 'YOPLAY'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
 
     df['currency'] = df['currency'].replace("CNY", "RMB")
@@ -408,7 +408,7 @@ def get_asiagaming_wager(date_from, date_to) -> DataFrame:
 
 
 def get_agslot_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT 
@@ -422,7 +422,7 @@ def get_agslot_wager(date_from, date_to) -> DataFrame:
         AND flag = 1 and game_type_code = 'SLOT' and platform_type in ('AGIN' ,'XIN')
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['currency'] = df['currency'].replace("CNY", "RMB")
     df['product'] = PRODUCT_CODE_AGSLOT
@@ -434,7 +434,7 @@ def get_agslot_wager(date_from, date_to) -> DataFrame:
 
 
 def get_agyoplay_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT 
@@ -448,7 +448,7 @@ def get_agyoplay_wager(date_from, date_to) -> DataFrame:
         AND flag = 1 and game_type_code = 'AGIN' and platform_type = 'YOPLAY'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['currency'] = df['currency'].replace("CNY", "RMB")
     df['product'] = PRODUCT_CODE_AGYOPLAY
@@ -460,7 +460,7 @@ def get_agyoplay_wager(date_from, date_to) -> DataFrame:
 
 
 def get_sagaming_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT 
@@ -472,7 +472,7 @@ def get_sagaming_wager(date_from, date_to) -> DataFrame:
         AND bet_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['product'] = PRODUCT_CODE_SAGAMING
 
@@ -485,7 +485,7 @@ def get_sagaming_wager(date_from, date_to) -> DataFrame:
 
 
 def get_simpleplay_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -499,7 +499,7 @@ def get_simpleplay_wager(date_from, date_to) -> DataFrame:
         AND game_type = 'slot'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     if df.shape[0] == 0:
         return df
@@ -519,7 +519,7 @@ def get_simpleplay_wager(date_from, date_to) -> DataFrame:
 
 
 def get_simpleplayfisher_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -533,7 +533,7 @@ def get_simpleplayfisher_wager(date_from, date_to) -> DataFrame:
         AND game_type != 'slot'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     if df.shape[0] == 0:
         return df
@@ -553,7 +553,7 @@ def get_simpleplayfisher_wager(date_from, date_to) -> DataFrame:
 
 
 def get_pgsoft_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -566,7 +566,7 @@ def get_pgsoft_wager(date_from, date_to) -> DataFrame:
         AND bet_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['product'] = PRODUCT_CODE_PGSOFT
 
@@ -577,7 +577,7 @@ def get_pgsoft_wager(date_from, date_to) -> DataFrame:
 
 
 def get_ebet_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -589,7 +589,7 @@ def get_ebet_wager(date_from, date_to) -> DataFrame:
         AND create_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['product'] = PRODUCT_CODE_EBETGAMING
 
@@ -602,7 +602,7 @@ def get_ebet_wager(date_from, date_to) -> DataFrame:
 
 
 def get_bti_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -619,7 +619,7 @@ def get_bti_wager(date_from, date_to) -> DataFrame:
         AND bet_status NOT IN ('Canceled', 'Open')
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['odds_in_user_style'] = df['odds_in_user_style'].astype(float)
 
@@ -644,7 +644,7 @@ def get_bti_wager(date_from, date_to) -> DataFrame:
 
 
 def get_sabacv_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -660,7 +660,7 @@ def get_sabacv_wager(date_from, date_to) -> DataFrame:
         AND transaction_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     conditions = (
             ((df.odds_type == 1) & (((df.odds >= -0.99) & (df.odds <= -0.1)) | ((df.odds >= 0.65) & (df.odds <= 1)))) |
@@ -685,7 +685,7 @@ def get_sabacv_wager(date_from, date_to) -> DataFrame:
 
 
 def get_saba_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -714,7 +714,7 @@ def get_saba_wager(date_from, date_to) -> DataFrame:
             wg.trans_id
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     conditions = (
         ((df.odds_type == 1) & (((df.odds >= -0.99) & (df.odds <= -0.1)) | ((df.odds >= 0.65) & (df.odds <= 1)))) |
@@ -739,7 +739,7 @@ def get_saba_wager(date_from, date_to) -> DataFrame:
 
 
 def get_saba_number(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -751,7 +751,7 @@ def get_saba_number(date_from, date_to) -> DataFrame:
         AND transaction_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['product'] = PRODUCT_CODE_SABANUMBERGAME
 
@@ -764,7 +764,7 @@ def get_saba_number(date_from, date_to) -> DataFrame:
 
 
 def get_saba_virtual(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -780,7 +780,7 @@ def get_saba_virtual(date_from, date_to) -> DataFrame:
         AND transaction_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     conditions = (
         ((df.odds_type == 1) & (((df.odds >= -0.99) & (df.odds <= -0.1)) | ((df.odds >= 0.65) & (df.odds <= 1)))) |
@@ -805,7 +805,7 @@ def get_saba_virtual(date_from, date_to) -> DataFrame:
 
 
 def get_tfgaming_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -822,7 +822,7 @@ def get_tfgaming_wager(date_from, date_to) -> DataFrame:
         AND result_status != 'CANCELLED'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['member_odds'] = df['member_odds'].astype(float)
 
@@ -850,7 +850,7 @@ def get_tfgaming_wager(date_from, date_to) -> DataFrame:
 
 
 def get_evolution_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -863,7 +863,7 @@ def get_evolution_wager(date_from, date_to) -> DataFrame:
         AND placed_on > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['currency'] = df['currency'].replace("VN2", "VND")
     df['currency'] = df['currency'].replace("CNY", "RMB")
@@ -876,7 +876,7 @@ def get_evolution_wager(date_from, date_to) -> DataFrame:
 
 
 def get_genesis_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -888,7 +888,7 @@ def get_genesis_wager(date_from, date_to) -> DataFrame:
         AND create_time > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['product'] = PRODUCT_CODE_GENESIS
 
@@ -901,7 +901,7 @@ def get_genesis_wager(date_from, date_to) -> DataFrame:
 
 
 def get_weworld_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -913,7 +913,7 @@ def get_weworld_wager(date_from, date_to) -> DataFrame:
         AND bet_datetime > '{date_from}'
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df['product'] = PRODUCT_CODE_WEWORLD
 
@@ -926,7 +926,7 @@ def get_weworld_wager(date_from, date_to) -> DataFrame:
 
 
 def get_digitain_wager(date_from, date_to) -> DataFrame:
-    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
@@ -948,7 +948,7 @@ def get_digitain_wager(date_from, date_to) -> DataFrame:
         AND bs.stake_status NOT IN (4,7,8)
     """
 
-    df = conn_collector_pg_hook.get_pandas_df(rawsql)
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     EuroValue      = 1.65
     HongkongValue  = 0.65
