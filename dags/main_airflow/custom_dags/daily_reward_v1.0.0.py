@@ -192,6 +192,13 @@ def update_wager_table_task(product: str, fetch_wager_func, **context):
         print("No new data found")
         raise AirflowSkipException
 
+    # Filtering By Currency = THB
+    print("Filtering THB Currency")
+    wager_df = wager_df[wager_df['currency'] == 'THB']
+    if wager_df.empty:
+        print("No Data with THB Currency Found")
+        raise AirflowSkipException
+
     wager_df['product'] = product
 
     wager_df.to_sql(table_name, conn, if_exists='replace')
@@ -1224,7 +1231,7 @@ def process_wagers_rebate(wager_df, product, **context):
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     wager_df = wager_df.groupby(['login_name', 'currency', 'product'], as_index=False, sort=False).sum()
-
+    
     wager_df = drop_members_claimed_via_bonus(wager_df, conn_reward_pg_hook)
 
     ratio_df = get_product_rebate_ratio(conn_reward_pg_hook)
@@ -1262,7 +1269,7 @@ def process_wagers_reward(wager_df, product, **context):
     point_setting_df = get_point_setting(conn_reward_pg_hook)
 
     wager_df = wager_df.groupby(['login_name', 'currency', 'product'], as_index=False, sort=False).sum()
-
+    
     wager_df = drop_members_claimed_via_bonus(wager_df,conn_reward_pg_hook)
 
     wager_df = get_reward_point(wager_df, point_setting_df)
@@ -1292,7 +1299,7 @@ def process_wagers_vip(wager_df, product, **context):
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     wager_df = wager_df.groupby(['login_name', 'currency', 'product'], as_index=False, sort=False).sum()
-
+    
     wager_df['status'] = VIP_STATUS_PENDING
 
     wager_df['vip_date'] = execution_date
