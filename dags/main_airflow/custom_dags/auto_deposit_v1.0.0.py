@@ -1,7 +1,9 @@
 from airflow.decorators import dag, task
 from datetime import datetime,timedelta
 
-def update_online_bank_data(bank_acc, date_from, date_to, maxRows, **context):
+def update_online_bank_data(bank_acc, date_from, date_to, max_rows, **context):
+    """Downloads bank data for each bank account that is currently on automation mode"""
+
     from airflow.exceptions import AirflowSkipException
     from main_airflow.modules.auto_deposit.providers import tmo
     from main_airflow.modules.auto_deposit.providers import att
@@ -29,7 +31,7 @@ def update_online_bank_data(bank_acc, date_from, date_to, maxRows, **context):
             tmo.update_VTB_TMO(bank_acc, date_from, date_to, **context)
 
         elif bank_acc['bank_code'].upper() == var.ACB_CODE:
-            tmo.update_ACB_TMO(bank_acc, maxRows, **context)
+            tmo.update_ACB_TMO(bank_acc, max_rows, **context)
 
         elif bank_acc['bank_code'].upper() == var.EXIM_CODE:
             tmo.update_EXIM_TMO(bank_acc, date_from, date_to, **context)
@@ -91,7 +93,7 @@ def clean_deposit_df(deposit_df):
 
 @dag(
     'auto_deposit_v1.0.0',
-    description='Auto deposit proccessing',
+    description='Automates online bank deposit processing, matching transactions, and updating balances.',
     schedule_interval='*/1 * * * *', 
     start_date=datetime(2023, 1, 14), 
     catchup=False,
@@ -104,7 +106,7 @@ def Auto_Deposit():
     def update_OBD(bank_acc, **context):
         date_to = datetime.utcnow()
         date_from = date_to - timedelta(days=60)
-        maxRows = 200
+        max_rows = 200
 
         # Taking Optional Date Parameters
         date_format = '%Y-%m-%d %H:%M:%S'
@@ -115,10 +117,10 @@ def Auto_Deposit():
             date_to = datetime.strptime(context['params']['date_to'], date_format)
 
         if 'max_rows' in context['params']:
-            maxRows = context['params']['max_rows']
+            max_rows = context['params']['max_rows']
 
         print("Updating Onlne Bank Data")
-        update_online_bank_data(bank_acc, date_from, date_to, maxRows, **context)
+        update_online_bank_data(bank_acc, date_from, date_to, max_rows, **context)
 
 
     @task(trigger_rule="all_done")
