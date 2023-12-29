@@ -115,6 +115,7 @@ def init_sqlite():
     if len( tables ) == 0:
         create_member_table_sql = """CREATE TABLE member(
                 id integer,
+                affiliate_id integer,
                 login_name text,
                 currency text
             ) 
@@ -156,9 +157,9 @@ def create_wager_table_task(product: str, **context):
     if len( tables ) == 0:
         curs.execute(f"""
                      CREATE TABLE {table_name} (
-                         bet_id integer, 
-                         eligible_stake_amount real, 
-                         login_name text, 
+                         bet_id integer,
+                         eligible_stake_amount real,
+                         login_name text,
                          currency text
                      )
                      """)
@@ -1247,8 +1248,8 @@ def process_wagers_rebate(wager_df, product, **context):
 
     wager_df['rebate_date'] = execution_date
 
-    wager_df['create_at'] = now
-    wager_df['update_at'] = now
+    wager_df['created_at'] = now
+    wager_df['updated_at'] = now
 
     wager_df = wager_df.drop(['level'], axis=1)
     print("Inserting ", wager_df.shape[0], " Data")
@@ -1280,8 +1281,8 @@ def process_wagers_reward(wager_df, product, **context):
     wager_df['status'] = REWARD_STATUS_UNCLAIMED
 
     wager_df['reward_date'] = execution_date
-    wager_df['create_at'] = now
-    wager_df['update_at'] = now
+    wager_df['created_at'] = now
+    wager_df['updated_at'] = now
 
     print("Inserting ", wager_df.shape[0], " Data")
 
@@ -1303,8 +1304,8 @@ def process_wagers_vip(wager_df, product, **context):
     wager_df['status'] = VIP_STATUS_PENDING
 
     wager_df['vip_date'] = execution_date
-    wager_df['create_at'] = now
-    wager_df['update_at'] = now
+    wager_df['created_at'] = now
+    wager_df['updated_at'] = now
 
     wager_df = drop_members_claimed_via_bonus(wager_df,conn_reward_pg_hook)
 
