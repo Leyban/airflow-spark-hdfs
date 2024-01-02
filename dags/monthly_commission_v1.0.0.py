@@ -173,10 +173,10 @@ def create_transaction_table_task(transaction_type, **kwargs):
     if len( tables ) == 0:
         curs.execute(f"""
                      CREATE TABLE {table_name} (
-                         bet_id integer,
-                         eligible_stake_amount real,
-                         login_name text,
-                         currency text
+                         affiliate_id integer,
+                         amount real,
+                         currency text,
+                         affiliate_fee real
                      )
                      """)
         conn.commit()
@@ -184,6 +184,41 @@ def create_transaction_table_task(transaction_type, **kwargs):
     conn.close()
 
   
+def save_transaction_to_sqlite(transaction_type, transaction_df, **kwargs):
+    import sqlite3
+
+    datestamp = kwargs['ds_nodash']
+    
+    table_name = f"{transaction_type}_{datestamp}"
+
+    filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
+
+    print(f"Saving {transaction_df.shape[0]} rows to file: {filepath}")
+    conn = sqlite3.connect(filepath)
+
+    transaction_df.to_sql(table_name, conn, if_exists='replace')
+    print("Saved Successfully")
+
+
+def get_transaction_df(transaction_type: str, **kwargs) -> DataFrame:
+    import sqlite3
+    import pandas as pd
+
+    datestamp = kwargs['ds_nodash']
+    table_name = f"{transaction_type}_{datestamp}"
+
+    filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
+
+    print(f"Connecting to {filepath}")
+    conn = sqlite3.connect(filepath)
+
+    df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+
+    df = df.drop(['index'], axis=1)
+
+    return df
+
+
 def drop_prev_transaction_table(transaction_type: str, **kwargs):
     import os
     datestamp = kwargs['ds_nodash']
@@ -275,19 +310,16 @@ def get_adjustment_data(date_from, date_to):
 
     raw_sql = f"""
         SELECT
+            ma.affiliate_id as affiliate_id,
+            ma.member_id as member_id,
             a.login_name as member_name,
-            ma.member_id,
             a.transaction_id,
             (CASE
                  WHEN a.transaction_type = {ADJUSTMENT_TRANSACTION_TYPE_CREDIT} 
                  THEN a.amount 
                  ELSE -a.amount 
             END) as amount,
-            a.currency as m_currency,
-            a.created_at as transaction_date,
-            ma.affiliate_id,
-            100 as payment_type_rate,
-            ar.name as adjustment_reason_name
+            a.currency as m_currency
         FROM adjustment as a
         LEFT JOIN adjustment_reason as ar on a.reason_id = ar.id
         LEFT JOIN member_account as ma on a.login_name = ma.login_name
@@ -306,7 +338,7 @@ def get_adjustment_data(date_from, date_to):
     return df
 
 
-def retrieve_transactions(get_transaction_func, **kwargs):
+def retrieve_transactions(get_transaction_func, transaction_type, **kwargs):
     from dateutil.relativedelta import relativedelta
 
     ds = datetime.strptime(kwargs['ds'], '%Y-%m-%d')
@@ -316,8 +348,16 @@ def retrieve_transactions(get_transaction_func, **kwargs):
 
     transaction_df = get_transaction_func(date_from, date_to)
 
-    print("test\n", transaction_df.head())
-    
+    save_transaction_to_sqlite(transaction_type, transaction_df, **kwargs)
+
+
+def calc_transaction_fees(transaction_type, **kwargs):
+    transaction_df = get_transaction_df(transaction_type, **kwargs)
+
+    transaction_df['amount'] = transaction_df['amount'] * transaction_df['affiliate_fee'] * 0.01
+
+    transaction_df = transaction_df.groupby(['affiliate_id'])
+
 
 @dag(
     dag_id='monthly_commission-v1.0.0',
