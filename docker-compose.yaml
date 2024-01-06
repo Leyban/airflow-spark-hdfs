@@ -49,6 +49,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/bin:/opt/bin
     - ${AIRFLOW_PROJ_DIR:-.}/drivers:/opt/drivers
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
     - ${AIRFLOW_PROJ_DIR:-.}/files:/opt/airflow/files
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config

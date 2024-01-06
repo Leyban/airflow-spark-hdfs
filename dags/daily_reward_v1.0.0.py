@@ -190,6 +190,7 @@ def update_wager_table_task(product: str, fetch_wager_func, **context):
 
     print(f"Updating sqlite table {table_name} with {wager_df.shape[0]} data")
     if wager_df.shape[0] == 0:
+        drop_prev_wager_table(product, **context)
         print("No new data found")
         raise AirflowSkipException
 
@@ -197,6 +198,7 @@ def update_wager_table_task(product: str, fetch_wager_func, **context):
     print("Filtering THB Currency")
     wager_df = wager_df[wager_df['currency'] == 'THB']
     if wager_df.empty:
+        drop_prev_wager_table(product, **context)
         print("No Data with THB Currency Found")
         raise AirflowSkipException
 
@@ -256,10 +258,12 @@ def insert_member_into_sqlite(new_member_df):
         query = f"""
         INSERT INTO member (
             id,
+            affiliate_id,
             login_name,
             currency
         )  VALUES (
             {row['id']},
+            {row['affiliate_id']},
             '{row['login_name']}',
             '{row['currency']}'
         )"""
@@ -285,6 +289,7 @@ def update_members_on_sqlite(missing_member_df) -> DataFrame:
     rawsql = f"""
         SELECT
             id,
+            affiliate_id,
             login_name,
             currency
         FROM member
@@ -353,9 +358,9 @@ def get_member_currency(wager_df) -> DataFrame:
         wager_df = wager_df.merge(new_member_df, 'left', 'login_name')
 
     print(wager_df.columns)
-    wager_df = wager_df.dropna(subset=['currency']) # Not found in PG identity table
+    wager_df = wager_df.dropna(subset=['currency']) # Drop Members Not found in PG identity table
     if 'member_id' in wager_df:
-        wager_df = wager_df.drop(columns=['member_id'])
+        wager_df = wager_df.drop(columns=['member_id', 'affiliate_id'])
 
     wager_df = wager_df.reset_index(drop=True)
 
