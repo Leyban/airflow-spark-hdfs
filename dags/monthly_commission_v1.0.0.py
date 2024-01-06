@@ -281,13 +281,16 @@ def get_members_from_sqlite() -> DataFrame:
 
 @task
 def create_monthly_wager_table(product: str, **kwargs):
+    exec_date = kwargs['ds'].strftime("%Y-%m-%d")
+    if exec_date.day != 1 | exec_date.day != 15:
+        print("Will only run on 1st and 15th day of the month")
+        raise AirflowSkipException
+
     import sqlite3
 
-    year, month, _ = get_year_month_last_month(**kwargs)
+    datestamp = kwargs['ds_nodash']
 
-    datestamp = f"{year}{month}"
-
-    table_name = f"{product}_{datestamp}"
+    table_name = f"{product}_{datestamp}_{exec_date.day}"
 
     filepath = f"{SQLITE_WAGERS_PATH}/{product}/{table_name}.db"
 
@@ -314,10 +317,10 @@ def create_monthly_wager_table(product: str, **kwargs):
 
 
 @task
-def create_daily_wager_table(product: str, date_range):
+def create_daily_wager_table(product: str, **kwargs):
     import sqlite3
 
-    datestamp = date_range[0].strftime("%Y%m%d")
+    datestamp = (datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y%m%d")
 
     table_name = f"{product}_{datestamp}"
 
@@ -347,13 +350,16 @@ def create_daily_wager_table(product: str, date_range):
 
 @task
 def create_monthly_transaction_table(transaction_type, **kwargs):
+    exec_date = kwargs['ds'].strftime("%Y-%m-%d")
+    if exec_date.day != 1 | exec_date.day != 15:
+        print("Will only run on 1st and 15th day of the month")
+        raise AirflowSkipException
+
     import sqlite3
 
-    year, month, _ = get_year_month_last_month(**kwargs)
+    datestamp = kwargs['ds_nodash']
 
-    datestamp = f"{year}{month}"
-
-    table_name = f"{transaction_type}_{datestamp}"
+    table_name = f"{transaction_type}_{datestamp}_{exec_date.day}"
 
     filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
 
@@ -380,10 +386,10 @@ def create_monthly_transaction_table(transaction_type, **kwargs):
 
   
 @task
-def create_daily_transaction_table(transaction_type, date_range):
+def create_daily_transaction_table(transaction_type, **kwargs):
     import sqlite3
 
-    datestamp = date_range[0].strftime("%Y%m%d")
+    datestamp = (datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y%m%d")
 
     table_name = f"{transaction_type}_{datestamp}"
 
@@ -426,11 +432,10 @@ def save_transaction_to_sqlite(transaction_type, transaction_df, datestamp):
     print("Saved Successfully")
 
 
-def get_transaction_df(transaction_type: str, date_range):
+def get_transaction_df(transaction_type: str, datestamp):
     import sqlite3
     import pandas as pd
 
-    datestamp = date_range[0].strftime("%Y%m%d")
     table_name = f"{transaction_type}_{datestamp}"
 
     filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
@@ -538,9 +543,19 @@ def get_adjustment_data(date_from, date_to):
 
 
 @task(trigger_rule='all_done')
-def update_transaction_table(get_transaction_func, transaction_type, date_range):
-    date_from = date_range[0].strftime("%Y-%m-%d %H:%M:%S")
-    date_to = date_range[1].strftime("%Y-%m-%d %H:%M:%S")
+def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
+
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+
+    target_date = exec_date.replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0
+            )
+
+    date_from = target_date - timedelta(days=1)
+    date_to = target_date - timedelta(microseconds=1)
 
     transaction_df = get_transaction_func(date_from, date_to)
 
@@ -552,7 +567,7 @@ def update_transaction_table(get_transaction_func, transaction_type, date_range)
 
     transaction_df['amount'] = transaction_df['amount'] * transaction_df['affiliate_fee'].astype(float) * 0.01
 
-    datestamp = date_range[0].strftime("%Y%m%d")
+    datestamp = date_from.strftime("%Y%m%d")
     save_transaction_to_sqlite(transaction_type, transaction_df, datestamp)
 
 
@@ -578,21 +593,39 @@ def get_allbet_wager(date_from, date_to) -> DataFrame:
 
 
 @task(trigger_rule="all_done")
-def aggregate_monthly_transactions(transaction_type, date_ranges):
+def aggregate_monthly_transactions(transaction_type, **kwargs):
+    import sqlite3
     import pandas as pd
-    import os
 
     monthly_transactions = pd.DataFrame()
-    datestamp = date_ranges[0][0].strftime("%Y%m%d")
+    datestamp = (datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y%m%d")
 
-    for date_range in date_ranges:
-        daily_transactions, filepath = get_transaction_df(transaction_type, date_range)
+    daily_transactions, filepath = get_transaction_df(transaction_type, datestamp)
 
-        monthly_transactions = pd.concat([monthly_transactions, daily_transactions])
+    monthly_transactions = pd.concat([monthly_transactions, daily_transactions])
 
-        os.remove(filepath)
+    datestamps = get_datestamps(**kwargs)
+
+    for datestamp in datestamps:
+        table_name = f"{transaction_type}_{datestamp}"
+        filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
+
+        conn = sqlite3.connect(filepath)
+
+        transaction_df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+
+        print(f"{transaction_df.shape[0]} Affiliates Updated on {datestamp}")
+
+        monthly_transactions = pd.concat([monthly_transactions, transaction_df])
+
+    if monthly_transactions.shape[0] == 0:
+        print("No Wager Data Found")
+        raise AirflowSkipException
 
     monthly_transactions = monthly_transactions.groupby(['affiliate_id', 'currency']).sum().reset_index()
+    
+    exec_time = datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)
+    datestamp = exec_time.strftime("%Y%m%d") + f"_{exec_time.day}"
 
     save_transaction_to_sqlite(transaction_type, monthly_transactions, datestamp)
 
@@ -1125,37 +1158,37 @@ def get_digitain_wager(date_from, date_to) -> DataFrame:
     return df
 
 
-def get_year_month_last_month(**kwargs):
+def get_datestamps(**kwargs):
+    import calendar
+
+    year, month = 0, 0
+    datestamps = []
+
     exec_date = datetime.strptime(kwargs['ds'], '%Y-%m-%d').replace(
-            day=1,
             hour=UTC_EXEC_TIME,
             minute=0,
             second=0,
             microsecond=0
             )
 
-    last_month = exec_date - timedelta(days=1)
-    month = last_month.month
-    year = last_month.year
+    if exec_date.day == 15:
+        year = exec_date.year
+        month = exec_date.month
 
-    return year, month, last_month
-    
+        for day in range(15):
+            datestamp = exec_date.replace(day=day).strftime("%Y%m%d")
+            datestamps.append(datestamp)
 
-@task
-def get_date_ranges(**kwargs):
-    import calendar
+    if exec_date.day == 1:
+        year = (exec_date - timedelta(days=1)).year
+        month = (exec_date - timedelta(days=1)).month
+        num_days = calendar.monthrange(year, month)[1]
 
-    year, month, last_month = get_year_month_last_month(**kwargs)
+        for day in range(14,num_days):
+            datestamp = exec_date.replace(day=day+1).strftime("%Y%m%d")
+            datestamps.append(datestamp)
 
-    num_days = calendar.monthrange(year, month)[1]
-
-    date_ranges = []
-    for day in range(num_days):
-        date_from = last_month.replace(day=day+1)
-        exec_date = date_from + timedelta(days=1, milliseconds=-1)
-        date_ranges.append([ date_from, exec_date ])
-
-    return date_ranges
+    return datestamps
 
 
 def save_wager_to_sqlite(product, wager_df, datestamp):
@@ -1173,12 +1206,20 @@ def save_wager_to_sqlite(product, wager_df, datestamp):
 
 
 @task
-def update_wager_table(product, fetch_wager_func, date_range):
+def update_wager_table(product, fetch_wager_func, **kwargs):
 
-    date_from = date_range[0]
-    date_to = date_range[1]
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    datestamp = (datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y%m%d")
 
-    datestamp = date_range[0].strftime("%Y%m%d")
+    target_date = exec_date.replace(
+            hour=UTC_EXEC_TIME,
+            minute=0,
+            second=0,
+            microsecond=0
+            )
+
+    date_from = target_date - timedelta(days=1)
+    date_to = target_date - timedelta(microseconds=1)
 
     print("Processing date range")
     print("date_from", date_from)
@@ -1199,17 +1240,15 @@ def update_wager_table(product, fetch_wager_func, date_range):
 
 
 @task(trigger_rule="all_done")
-def aggregate_wagers(product, date_ranges):
+def aggregate_monthly_wagers(product, **kwargs):
     import sqlite3
     import pandas as pd
-    import os
 
     wager_df = pd.DataFrame()
-    
-    datestamp = date_ranges[0][0].strftime("%Y%m")
 
-    for date_range in date_ranges:
-        datestamp = date_range[0].strftime("%Y%m%d")
+    datestamps = get_datestamps(**kwargs)
+
+    for datestamp in datestamps:
         table_name = f"{product}_{datestamp}"
         filepath = f"{SQLITE_WAGERS_PATH}/{product}/{table_name}.db"
 
@@ -1221,15 +1260,15 @@ def aggregate_wagers(product, date_ranges):
 
         wager_df = pd.concat([wager_df, product_df])
 
-        print("Deleting", filepath)
-        os.remove(filepath)
-
     if wager_df.shape[0] == 0:
         print("No Wager Data Found")
         raise AirflowSkipException
 
     wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
     
+    exec_time = datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)
+    datestamp = exec_time.strftime("%Y%m%d") + f"_{exec_time.day}"
+
     save_wager_to_sqlite(product, wager_df, datestamp)
 
 
@@ -1248,32 +1287,42 @@ def monthly_commission():
             python_callable=init_sqlite,
             )
 
-    date_ranges = get_date_ranges()
-
     @task_group
     def get_transactions():
 
         def transaction_task_group(transaction_type, get_transaction_func):
             @task_group(group_id=transaction_type)
-            def process_transactions():
+            def gather_transactions():
 
-                create_monthly_table = create_monthly_transaction_table(transaction_type)
-                create_daily_table = create_daily_transaction_table.partial(
-                        transaction_type=transaction_type
-                        ).expand(date_range=date_ranges)
-                update_daily_table = update_transaction_table.partial(
-                        get_transaction_func=get_transaction_func, 
-                        transaction_type=transaction_type
-                        ).expand(date_range=date_ranges)
-                aggregate_transactions_monthly = aggregate_monthly_transactions(transaction_type, date_ranges)
+                create_daily_table = create_daily_transaction_table(transaction_type)
+                update_daily_table = update_transaction_table(get_transaction_func, transaction_type)
 
-                [create_daily_table, create_monthly_table] >> update_daily_table >> aggregate_transactions_monthly
+                create_daily_table >> update_daily_table
 
-            return process_transactions
+            return gather_transactions
 
         transaction_task_group(TRANSACTION_TYPE_DEPOSIT, get_deposit_data)()
         transaction_task_group(TRANSACTION_TYPE_WITHDRAWAL, get_withdrawal_data)()
         transaction_task_group(TRANSACTION_TYPE_ADJUSTMENT, get_adjustment_data)()
+
+    
+    @task_group
+    def aggregate_transactions():
+
+        def transaction_aggregation(transaction_type):
+            @task_group(group_id=transaction_type)
+            def aggregate_transactions_task_group():
+
+                create_monthly_table = create_monthly_transaction_table(transaction_type)
+                aggregate_transactions_monthly = aggregate_monthly_transactions(transaction_type)
+
+                create_monthly_table >> aggregate_transactions_monthly
+
+            return aggregate_transactions_task_group
+
+        transaction_aggregation(TRANSACTION_TYPE_DEPOSIT)()
+        transaction_aggregation(TRANSACTION_TYPE_WITHDRAWAL)()
+        transaction_aggregation(TRANSACTION_TYPE_ADJUSTMENT)()
 
 
     @task_group
@@ -1281,21 +1330,15 @@ def monthly_commission():
 
         def wager_task_group(product, get_wager_func):
             @task_group(group_id=product)
-            def get_wager_data():
+            def gather_wagers():
 
-                create_monthly_table = create_monthly_wager_table(product)
-                create_daily_table = create_daily_wager_table.partial(product=product).expand(
-                        date_range=date_ranges
-                        )
-                update_daily_table = update_wager_table.partial( 
-                        product=product, fetch_wager_func=get_wager_func,
-                        ).expand( date_range=date_ranges )
-                aggregate_wagers_monthly = aggregate_wagers(product, date_ranges)
+                create_daily_table = create_daily_wager_table(product)
+                update_daily_table = update_wager_table(product, get_wager_func)
 
-                [create_daily_table, create_monthly_table] >> update_daily_table >> aggregate_wagers_monthly
+                create_daily_table >> update_daily_table
 
-            return get_wager_data
-
+            return gather_wagers
+        
         wager_task_group(PRODUCT_CODE_ALLBET, get_allbet_wager)()
         wager_task_group(PRODUCT_CODE_ASIAGAMING, get_asiagaming_wager)()
         wager_task_group(PRODUCT_CODE_AGSLOT, get_agslot_wager)()
@@ -1318,12 +1361,57 @@ def monthly_commission():
 
 
     @task_group
+    def aggregate_wagers():
+
+        def wager_aggregation(product):
+            @task_group(group_id=product)
+            def aggregate_wagers_task_group():
+
+                create_monthly_table = create_monthly_wager_table(product)
+                aggregate_wagers_monthly = aggregate_monthly_wagers(product)
+
+                create_monthly_table >> aggregate_wagers_monthly
+
+            return aggregate_wagers_task_group
+
+        wager_aggregation(PRODUCT_CODE_ALLBET)()
+        wager_aggregation(PRODUCT_CODE_ASIAGAMING)()
+        wager_aggregation(PRODUCT_CODE_AGSLOT)()
+        wager_aggregation(PRODUCT_CODE_AGYOPLAY)()
+        wager_aggregation(PRODUCT_CODE_SAGAMING)()
+        wager_aggregation(PRODUCT_CODE_SPSLOT)()
+        wager_aggregation(PRODUCT_CODE_SPFISH)()
+        wager_aggregation(PRODUCT_CODE_SABACV)()
+        wager_aggregation(PRODUCT_CODE_PGSOFT)()
+        wager_aggregation(PRODUCT_CODE_EBETGAMING)()
+        wager_aggregation(PRODUCT_CODE_BTISPORTS)()
+        wager_aggregation(PRODUCT_CODE_TFGAMING)()
+        wager_aggregation(PRODUCT_CODE_EVOLUTION)()
+        wager_aggregation(PRODUCT_CODE_GENESIS)()
+        wager_aggregation(PRODUCT_CODE_SABA)()
+        wager_aggregation(PRODUCT_CODE_SABANUMBERGAME)()
+        wager_aggregation(PRODUCT_CODE_SABAVIRTUAL)()
+        wager_aggregation(PRODUCT_CODE_WEWORLD)()
+        wager_aggregation(PRODUCT_CODE_DIGITAIN)()
+
+
+    @task_group
     def get_adjustments():
         print("Hi mom")
 
 
-    init_sqlite_task >> date_ranges
-    date_ranges >> get_transactions()
-    date_ranges >> get_wagers()
+    @task_group
+    def daily_data_gathering():
+        get_transactions()
+        get_wagers()
+        get_adjustments()
+
+    @task_group
+    def bi_monthly_aggregation():
+        aggregate_transactions()
+        aggregate_wagers()
+
+
+    init_sqlite_task >> daily_data_gathering() >> bi_monthly_aggregation()
 
 monthly_commission()
