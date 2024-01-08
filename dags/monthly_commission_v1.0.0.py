@@ -1,10 +1,17 @@
+# Todo: Implement Minimum Players
+# Todo: Implement Payout Frequency
+# Todo: Implement Serendipity
+
 from airflow.decorators import dag, task_group, task
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.exceptions import AirflowSkipException
+from airflow.utils.trigger_rule import TriggerRule
 from datetime import  datetime,timedelta
 from pandas import DataFrame
-import time
+
+# Bi-Monthly Day
+BI_MONTHLY_DAY = 8
 
 # Commmission Fee Type
 COMMISSION_FEE_TYPE_DP = 1
@@ -13,6 +20,7 @@ COMMISSION_FEE_TYPE_ADJ = 3
 
 # Adjustment Transaction Type
 ADJUSTMENT_TRANSACTION_TYPE_CREDIT = 3
+ADJUSTMENT_TYPE_COMMISSION = 1
 
 # Transaction Status
 ADJUSTMENT_STATUS_SUCCESSFUL = 2
@@ -20,6 +28,10 @@ WITHDRAWAL_STATUS_SUCCESSFUL = 6
 DEPOSIT_STATUS_SUCCESSFUL = 2
 
 # Table Names
+AFFILIATE_TABLE = "adjustment"
+
+ADJUSTMENT_TABLE = "adjustment"
+
 DEPOSIT_TABLE = "deposit"
 WITHDRAWAL_TABLE = "withdrawal"
 
@@ -42,6 +54,9 @@ WEWORLD_TABLE = "weworld_wager"
 # Sqlite file directories
 SQLITE_TRANSACTIONS_PATH = "./data/monthly_commission/transactions"
 SQLITE_WAGERS_PATH = "./data/monthly_commission/wagers"
+SQLITE_ADJUSTMENTS_PATH = "./data/monthly_commission/adjustments"
+SQLITE_AFFILIATE_PATH = "./data/monthly_commission/affiliate"
+SQLITE_MEMBERS_FILEPATH = "./data/member.db"
 
 # Product Codes
 PRODUCT_CODE_ALLBET = "allbet"
@@ -113,7 +128,10 @@ def init_sqlite():
         if not os.path.exists(f"{SQLITE_TRANSACTIONS_PATH}/{ttype}/"):
             os.makedirs(f"{SQLITE_TRANSACTIONS_PATH}/{ttype}/")
 
-    conn = sqlite3.connect("./data/member.db") # This should be in Cassandra or something
+    if not os.path.exists(f"{SQLITE_ADJUSTMENTS_PATH}/"):
+        os.makedirs(f"{SQLITE_ADJUSTMENTS_PATH}/")
+
+    conn = sqlite3.connect(SQLITE_MEMBERS_PATH) # This should be in Cassandra or something
     curs = conn.cursor()
 
     get_table_list = "SELECT name FROM sqlite_master WHERE type='table' AND name='member'"
@@ -181,7 +199,7 @@ def get_member_currency(wager_df) -> DataFrame:
 
 def insert_member_into_sqlite(new_member_df):
     import sqlite3
-    conn = sqlite3.connect("./data/member.db")
+    conn = sqlite3.connect(SQLITE_MEMBERS_PATH)
     curs = conn.cursor()
 
     new_member_df = new_member_df.reset_index(drop=True)
@@ -263,7 +281,7 @@ def get_members_from_sqlite() -> DataFrame:
     import sqlite3
     import pandas as pd
 
-    conn = sqlite3.connect("./data/member.db")
+    conn = sqlite3.connect(SQLITE_MEMBERS_PATH)
 
     rawsql = f"""
         SELECT
@@ -279,10 +297,10 @@ def get_members_from_sqlite() -> DataFrame:
     return members_df
 
 
-@task
-def create_monthly_wager_table(product: str, **kwargs):
-    exec_date = kwargs['ds'].strftime("%Y-%m-%d")
-    if exec_date.day != 1 | exec_date.day != 15:
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def create_bimonthly_wager_table(product: str, **kwargs):
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
         print("Will only run on 1st and 15th day of the month")
         raise AirflowSkipException
 
@@ -348,11 +366,11 @@ def create_daily_wager_table(product: str, **kwargs):
     conn.close()
 
 
-@task
-def create_monthly_transaction_table(transaction_type, **kwargs):
-    exec_date = kwargs['ds'].strftime("%Y-%m-%d")
-    if exec_date.day != 1 | exec_date.day != 15:
-        print("Will only run on 1st and 15th day of the month")
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def create_bimonthly_transaction_table(transaction_type, **kwargs):
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
+        print(f"Will only run on 1st and {BI_MONTHLY_DAY}th day of the month")
         raise AirflowSkipException
 
     import sqlite3
@@ -542,7 +560,7 @@ def get_adjustment_data(date_from, date_to):
     return df
 
 
-@task(trigger_rule='all_done')
+@task
 def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
 
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
@@ -592,17 +610,12 @@ def get_allbet_wager(date_from, date_to) -> DataFrame:
     return df 
 
 
-@task(trigger_rule="all_done")
-def aggregate_monthly_transactions(transaction_type, **kwargs):
+@task
+def aggregate_bimonthly_transactions(transaction_type, **kwargs):
     import sqlite3
     import pandas as pd
 
     monthly_transactions = pd.DataFrame()
-    datestamp = (datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y%m%d")
-
-    daily_transactions, filepath = get_transaction_df(transaction_type, datestamp)
-
-    monthly_transactions = pd.concat([monthly_transactions, daily_transactions])
 
     datestamps = get_datestamps(**kwargs)
 
@@ -611,12 +624,18 @@ def aggregate_monthly_transactions(transaction_type, **kwargs):
         filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
 
         conn = sqlite3.connect(filepath)
+        curs = conn.cursor()
 
-        transaction_df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+        get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
 
-        print(f"{transaction_df.shape[0]} Affiliates Updated on {datestamp}")
+        res = curs.execute(get_table_list)
+        tables = res.fetchall()
 
-        monthly_transactions = pd.concat([monthly_transactions, transaction_df])
+        if len( tables ) != 0:
+            daily_transactions = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            print(f"{daily_transactions.shape[0]} Affiliates Updated on {datestamp}")
+
+            monthly_transactions = pd.concat([monthly_transactions, daily_transactions])
 
     if monthly_transactions.shape[0] == 0:
         print("No Wager Data Found")
@@ -624,8 +643,8 @@ def aggregate_monthly_transactions(transaction_type, **kwargs):
 
     monthly_transactions = monthly_transactions.groupby(['affiliate_id', 'currency']).sum().reset_index()
     
-    exec_time = datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)
-    datestamp = exec_time.strftime("%Y%m%d") + f"_{exec_time.day}"
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
 
     save_transaction_to_sqlite(transaction_type, monthly_transactions, datestamp)
 
@@ -1171,12 +1190,12 @@ def get_datestamps(**kwargs):
             microsecond=0
             )
 
-    if exec_date.day == 15:
+    if exec_date.day == BI_MONTHLY_DAY:
         year = exec_date.year
         month = exec_date.month
 
-        for day in range(15):
-            datestamp = exec_date.replace(day=day).strftime("%Y%m%d")
+        for day in range(BI_MONTHLY_DAY):
+            datestamp = exec_date.replace(day=day +1).strftime("%Y%m%d")
             datestamps.append(datestamp)
 
     if exec_date.day == 1:
@@ -1184,7 +1203,7 @@ def get_datestamps(**kwargs):
         month = (exec_date - timedelta(days=1)).month
         num_days = calendar.monthrange(year, month)[1]
 
-        for day in range(14,num_days):
+        for day in range(BI_MONTHLY_DAY - 1,num_days):
             datestamp = exec_date.replace(day=day+1).strftime("%Y%m%d")
             datestamps.append(datestamp)
 
@@ -1239,8 +1258,8 @@ def update_wager_table(product, fetch_wager_func, **kwargs):
     save_wager_to_sqlite(product, wager_df, datestamp)
 
 
-@task(trigger_rule="all_done")
-def aggregate_monthly_wagers(product, **kwargs):
+@task
+def aggregate_bimonthly_wagers(product, **kwargs):
     import sqlite3
     import pandas as pd
 
@@ -1253,27 +1272,334 @@ def aggregate_monthly_wagers(product, **kwargs):
         filepath = f"{SQLITE_WAGERS_PATH}/{product}/{table_name}.db"
 
         conn = sqlite3.connect(filepath)
+        curs = conn.cursor()
 
-        product_df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+        get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
 
-        print(f"{product_df.shape[0]} Affiliates Updated on {datestamp}")
+        res = curs.execute(get_table_list)
+        tables = res.fetchall()
 
-        wager_df = pd.concat([wager_df, product_df])
+        if len( tables ) != 0:
+            product_df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            print(f"{product_df.shape[0]} Affiliates Updated on {datestamp}")
+
+            wager_df = pd.concat([wager_df, product_df])
 
     if wager_df.shape[0] == 0:
         print("No Wager Data Found")
         raise AirflowSkipException
 
     wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
-    
-    exec_time = datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)
-    datestamp = exec_time.strftime("%Y%m%d") + f"_{exec_time.day}"
+
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
 
     save_wager_to_sqlite(product, wager_df, datestamp)
 
 
+@task(trigger_rule=TriggerRule.ALL_DONE)
+def create_bimonthly_adjustment_table(**kwargs):
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    print(exec_date.day)
+    if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
+        print("Will only run on 1st and 15th day of the month")
+        raise AirflowSkipException
+
+    import sqlite3
+
+    datestamp = kwargs['ds_nodash']
+
+    table_name = f"adjustment_{datestamp}_{exec_date.day}"
+
+    filepath = f"{SQLITE_ADJUSTMENTS_PATH}/{table_name}.db"
+
+    print(f"Creating file: {filepath}")
+    conn = sqlite3.connect(filepath)
+    curs = conn.cursor()
+
+    get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+
+    res = curs.execute(get_table_list)
+    tables = res.fetchall()
+
+    if len( tables ) == 0:
+        curs.execute(f"""
+                     CREATE TABLE {table_name} (
+                         affiliate_id integer,
+                         amount real,
+                         currency text
+                     )
+                     """)
+        conn.commit()
+
+    conn.close()
+
+
+@task
+def create_daily_adjustment_table(**kwargs):
+    import sqlite3
+
+    datestamp = (datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y%m%d")
+
+    table_name = f"adjustment_{datestamp}"
+
+    filepath = f"{SQLITE_ADJUSTMENTS_PATH}/{table_name}.db"
+
+    print(f"Creating file: {filepath}")
+    conn = sqlite3.connect(filepath)
+    curs = conn.cursor()
+
+    get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+
+    res = curs.execute(get_table_list)
+    tables = res.fetchall()
+
+    if len( tables ) == 0:
+        curs.execute(f"""
+                     CREATE TABLE {table_name} (
+                         affiliate_id integer,
+                         amount real,
+                         currency text
+                     )
+                     """)
+        conn.commit()
+
+    conn.close()
+
+
+def save_adjustment_to_sqlite(adjustment_df, datestamp):
+    import sqlite3
+
+    table_name = f"adjustment_{datestamp}"
+
+    filepath = f"{SQLITE_TRANSACTIONS_PATH}/adjustment/{table_name}.db"
+
+    print(f"Saving {adjustment_df.shape[0]} rows to file: {filepath}")
+    conn = sqlite3.connect(filepath)
+
+    adjustment_df.to_sql(table_name, conn, if_exists='replace')
+    print("Saved Successfully")
+
+
+def get_affiliate_adjustment_data(date_from, date_to):
+    conn_payment_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    raw_sql = f"""
+        SELECT
+            (CASE WHEN transaction_type = {ADJUSTMENT_TRANSACTION_TYPE_CREDIT} THEN amount ELSE -amount END) as amount,
+            affiliate_id,
+            currency
+        FROM adjustment
+        WHERE create_at >= '{date_from}'
+        AND create_at <= '{date_to}'
+        AND status = {ADJUSTMENT_STATUS_SUCCESSFUL}
+        AND type = {ADJUSTMENT_TYPE_COMMISSION}
+        """
+
+    df = conn_payment_pg_hook.get_pandas_df(raw_sql)
+
+    return df
+
+
+@task
+def update_adjustment_table(**kwargs):
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+
+    target_date = exec_date.replace(
+            hour=UTC_EXEC_TIME,
+            minute=0,
+            second=0,
+            microsecond=0
+            )
+
+    date_from = target_date - timedelta(days=1)
+    date_to = target_date - timedelta(microseconds=1)
+
+    adjustment_df = get_affiliate_adjustment_data(date_from, date_to)
+
+    if adjustment_df.shape[0] == 0:
+        print(f"No adjustments found")
+        raise AirflowSkipException
+
+    adjustment_df = adjustment_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
+
+    datestamp = date_from.strftime("%Y%m%d")
+    save_adjustment_to_sqlite(adjustment_df, datestamp)
+
+
+@task
+def aggregate_bimonthly_adjustments(**kwargs):
+    import sqlite3
+    import pandas as pd
+
+    monthly_transactions = pd.DataFrame()
+
+    datestamps = get_datestamps(**kwargs)
+
+    for datestamp in datestamps:
+        table_name = f"adjustment_{datestamp}"
+        filepath = f"{SQLITE_TRANSACTIONS_PATH}/{table_name}.db"
+
+        conn = sqlite3.connect(filepath)
+        curs = conn.cursor()
+
+        get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+
+        res = curs.execute(get_table_list)
+        tables = res.fetchall()
+
+        if len( tables ) != 0:
+            transaction_df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            print(f"{transaction_df.shape[0]} Affiliates Updated on {datestamp}")
+
+            monthly_transactions = pd.concat([monthly_transactions, transaction_df])
+
+    if monthly_transactions.shape[0] == 0:
+        print("No Wager Data Found")
+        raise AirflowSkipException
+
+    monthly_transactions = monthly_transactions.groupby(['affiliate_id', 'currency']).sum().reset_index()
+    
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
+
+    table_name = f"adjustment_{datestamp}_{exec_date.day}"
+
+    save_adjustment_to_sqlite(monthly_transactions, datestamp)
+
+
+@task
+def create_affiliate_table(**kwargs):
+    import sqlite3
+
+    datestamp = kwargs['ds_nodash']
+    table_name = f"affiliate_{datestamp}"
+    filepath = f"{SQLITE_AFFILIATE_PATH}/{table_name}.db"
+
+    conn = sqlite3.connect(filepath)
+
+    print(f"Creating file: {filepath}")
+    conn = sqlite3.connect(filepath)
+    curs = conn.cursor()
+
+    get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+
+    res = curs.execute(get_table_list)
+    tables = res.fetchall()
+
+    if len( tables ) == 0:
+        curs.execute(f"""
+                     CREATE TABLE {table_name} (
+                         affiliate_id integer,
+                         amount real,
+                         currency text
+                     )
+                     """)
+        conn.commit()
+
+    conn.close()
+
+
+def save_affiliate_fees(affiliate_df: DataFrame, **kwargs):
+    import sqlite3
+
+    datestamp = kwargs['ds_nodash']
+    table_name = f"affiliate_{datestamp}"
+    filepath = f"{SQLITE_AFFILIATE_PATH}/{table_name}.db"
+
+    print(f"Connecting to: {filepath}")
+    conn = sqlite3.connect(filepath)
+    curs = conn.cursor()
+
+    get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+
+    res = curs.execute(get_table_list)
+    tables = res.fetchall()
+
+    if len( tables ) != 0:
+        print(f"Saving {affiliate_df.shape[0]} affiliates")
+        affiliate_df.to_sql(table_name, conn, if_exists='replace')
+
+
+def get_aggregated_transactions(datestamp):
+    import sqlite3
+    import pandas as pd
+
+    transaction_df = pd.DataFrame()
+
+    for transaction_type in TRANSACTION_TYPES:
+        table_name = f"{transaction_type}_{datestamp}"
+        filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
+
+        conn = sqlite3.connect(filepath)
+        
+        df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+
+        transaction_df = pd.concat([transaction_df, df])
+
+    return transaction_df
+
+
+def get_aggregated_wagers(datestamp):
+    import sqlite3
+    import pandas as pd
+
+    wager_df = pd.DataFrame()
+
+    for product in PRODUCT_CODES:
+        table_name = f"{product}_{datestamp}"
+        filepath = f"{SQLITE_WAGERS_PATH}/{product}/{table_name}.db"
+
+        conn = sqlite3.connect(filepath)
+        
+        df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+
+        wager_df = pd.concat([wager_df, df])
+
+    return wager_df
+
+
+def get_aggregated_adjustments(datestamp):
+    import sqlite3
+    import pandas as pd
+
+    table_name = f"adjustment_{datestamp}"
+    filepath = f"{SQLITE_TRANSACTIONS_PATH}/{table_name}.db"
+
+    conn = sqlite3.connect(filepath)
+    
+    df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+
+    return df
+
+    
+@task
+def calculate_affiliate_fees(**kwargs):
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
+    
+    transaction_df: DataFrame = get_aggregated_transactions(datestamp)
+    wager_df = get_aggregated_wagers(datestamp)
+    adjustment_df = get_aggregated_adjustments(datestamp)
+
+    transaction_df = transaction_df.rename(columns={'amount': 'expenses'})
+    adjustment_df = adjustment_df.rename(columns={'amount': 'adjustment'})
+
+    affiliate_df = transaction_df.merge(wager_df, how='left', on=['affiliate_id', 'currency'])
+    affiliate_df = affiliate_df.merge(adjustment_df, how='left', on=['affiliate_id', 'currency'])
+
+    affiliate_df = affiliate_df.fillna(0)
+
+    affiliate_df['total_affiliate_fee'] = affiliate_df['adjustment'] - affiliate_df['win_loss'] - affiliate_df['expenses']
+
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+
+    affiliate_df.to_sql(AFFILIATE_TABLE, engine_affiliate, if_exists='append', index=False)
+
+
 @dag(
-    dag_id='monthly_commission-v1.0.0',
+    dag_id='monthly_commission-v1.0.0_testzone',
     description='Calculates commission for affiliates every month',
     schedule="@monthly",
     start_date=datetime(2021, 1, 1),
@@ -1304,7 +1630,6 @@ def monthly_commission():
         transaction_task_group(TRANSACTION_TYPE_DEPOSIT, get_deposit_data)()
         transaction_task_group(TRANSACTION_TYPE_WITHDRAWAL, get_withdrawal_data)()
         transaction_task_group(TRANSACTION_TYPE_ADJUSTMENT, get_adjustment_data)()
-
     
     @task_group
     def aggregate_transactions():
@@ -1313,8 +1638,8 @@ def monthly_commission():
             @task_group(group_id=transaction_type)
             def aggregate_transactions_task_group():
 
-                create_monthly_table = create_monthly_transaction_table(transaction_type)
-                aggregate_transactions_monthly = aggregate_monthly_transactions(transaction_type)
+                create_monthly_table = create_bimonthly_transaction_table(transaction_type)
+                aggregate_transactions_monthly = aggregate_bimonthly_transactions(transaction_type)
 
                 create_monthly_table >> aggregate_transactions_monthly
 
@@ -1323,7 +1648,6 @@ def monthly_commission():
         transaction_aggregation(TRANSACTION_TYPE_DEPOSIT)()
         transaction_aggregation(TRANSACTION_TYPE_WITHDRAWAL)()
         transaction_aggregation(TRANSACTION_TYPE_ADJUSTMENT)()
-
 
     @task_group
     def get_wagers():
@@ -1359,7 +1683,6 @@ def monthly_commission():
         wager_task_group(PRODUCT_CODE_WEWORLD, get_weworld_wager)()
         wager_task_group(PRODUCT_CODE_DIGITAIN, get_digitain_wager)()
 
-
     @task_group
     def aggregate_wagers():
 
@@ -1367,8 +1690,8 @@ def monthly_commission():
             @task_group(group_id=product)
             def aggregate_wagers_task_group():
 
-                create_monthly_table = create_monthly_wager_table(product)
-                aggregate_wagers_monthly = aggregate_monthly_wagers(product)
+                create_monthly_table = create_bimonthly_wager_table(product)
+                aggregate_wagers_monthly = aggregate_bimonthly_wagers(product)
 
                 create_monthly_table >> aggregate_wagers_monthly
 
@@ -1394,11 +1717,19 @@ def monthly_commission():
         wager_aggregation(PRODUCT_CODE_WEWORLD)()
         wager_aggregation(PRODUCT_CODE_DIGITAIN)()
 
-
     @task_group
     def get_adjustments():
-        print("Hi mom")
+        create_daily_table = create_daily_adjustment_table()
+        update_daily_table = update_adjustment_table()
 
+        create_daily_table >> update_daily_table
+
+    @task_group
+    def aggregate_adjustments():
+        create_monthly_table = create_bimonthly_adjustment_table()
+        aggregate_adjustments_monthly = aggregate_bimonthly_adjustments()
+
+        create_monthly_table >> aggregate_adjustments_monthly
 
     @task_group
     def daily_data_gathering():
@@ -1410,7 +1741,7 @@ def monthly_commission():
     def bi_monthly_aggregation():
         aggregate_transactions()
         aggregate_wagers()
-
+        aggregate_adjustments()
 
     init_sqlite_task >> daily_data_gathering() >> bi_monthly_aggregation()
 
