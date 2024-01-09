@@ -1,6 +1,8 @@
+# Todo: Implement Commission Tier on Win Loss
 # Todo: Implement Minimum Players
 # Todo: Implement Payout Frequency
-# Todo: Implement Serendipity
+# Todo: Implement Weekly, Bi-Monthly, and Monthly Option based on Affiliate
+# Todo: Implement Idempotency
 
 from airflow.decorators import dag, task_group, task
 from airflow.operators.python import PythonOperator
@@ -10,8 +12,10 @@ from airflow.utils.trigger_rule import TriggerRule
 from datetime import  datetime,timedelta
 from pandas import DataFrame
 
-# Bi-Monthly Day
+# Payout
+WEEKLY_DAY = 1
 BI_MONTHLY_DAY = 8
+MONTHLY_DAY = 1
 
 # Commmission Fee Type
 COMMISSION_FEE_TYPE_DP = 1
@@ -55,8 +59,9 @@ WEWORLD_TABLE = "weworld_wager"
 SQLITE_TRANSACTIONS_PATH = "./data/monthly_commission/transactions"
 SQLITE_WAGERS_PATH = "./data/monthly_commission/wagers"
 SQLITE_ADJUSTMENTS_PATH = "./data/monthly_commission/adjustments"
-SQLITE_AFFILIATE_PATH = "./data/monthly_commission/affiliate"
+SQLITE_COMMISSION_PATH = "./data/monthly_commission/commission"
 SQLITE_MEMBERS_FILEPATH = "./data/member.db"
+SQLITE_AFFILIATE_ACCOUNT_FILEPATH = "./data/affiliate.db"
 
 # Product Codes
 PRODUCT_CODE_ALLBET = "allbet"
@@ -131,7 +136,7 @@ def init_sqlite():
     if not os.path.exists(f"{SQLITE_ADJUSTMENTS_PATH}/"):
         os.makedirs(f"{SQLITE_ADJUSTMENTS_PATH}/")
 
-    conn = sqlite3.connect(SQLITE_MEMBERS_PATH) # This should be in Cassandra or something
+    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH) # This should be in Cassandra or something
     curs = conn.cursor()
 
     get_table_list = "SELECT name FROM sqlite_master WHERE type='table' AND name='member'"
@@ -149,10 +154,32 @@ def init_sqlite():
                     ) 
         """
         curs.execute(create_member_table_sql)
+    curs.close()
 
+    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH) # This should be in Cassandra or something
+    curs = conn.cursor()
+
+    get_table_list = "SELECT name FROM sqlite_master WHERE type='table' AND name='affiliate'"
+
+    res = curs.execute(get_table_list)
+    tables = res.fetchall()
+
+    if len( tables ) == 0:
+        create_member_table_sql = """
+            CREATE TABLE affiliate(
+                    affiliate_id integer,
+                    commission_tier1 integer,
+                    commission_tier2 integer,
+                    commission_tier3 integer,
+                    payout_frequency text,
+                    min_active_player integer
+                    ) 
+        """
+        curs.execute(create_member_table_sql)
     curs.close()
 
 
+# Todo: I think this can be refactored better
 def get_member_currency(wager_df) -> DataFrame:
     import pandas as pd
 
@@ -188,7 +215,7 @@ def get_member_currency(wager_df) -> DataFrame:
         wager_df = wager_df.merge(new_member_df, 'left', 'login_name')
 
     print(wager_df.columns)
-    wager_df = wager_df.dropna(subset=['currency']) # Drop Members Not found in PG identity table
+    wager_df = wager_df.dropna(subset=['currency']) # Drop Members Not found
     if 'member_id' in wager_df:
         wager_df = wager_df.drop(columns=['member_id'])
 
@@ -199,7 +226,7 @@ def get_member_currency(wager_df) -> DataFrame:
 
 def insert_member_into_sqlite(new_member_df):
     import sqlite3
-    conn = sqlite3.connect(SQLITE_MEMBERS_PATH)
+    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH)
     curs = conn.cursor()
 
     new_member_df = new_member_df.reset_index(drop=True)
@@ -281,7 +308,7 @@ def get_members_from_sqlite() -> DataFrame:
     import sqlite3
     import pandas as pd
 
-    conn = sqlite3.connect(SQLITE_MEMBERS_PATH)
+    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH)
 
     rawsql = f"""
         SELECT
@@ -307,9 +334,7 @@ def create_bimonthly_wager_table(product: str, **kwargs):
     import sqlite3
 
     datestamp = kwargs['ds_nodash']
-
     table_name = f"{product}_{datestamp}_{exec_date.day}"
-
     filepath = f"{SQLITE_WAGERS_PATH}/{product}/{table_name}.db"
 
     print(f"Creating file: {filepath}")
@@ -408,9 +433,7 @@ def create_daily_transaction_table(transaction_type, **kwargs):
     import sqlite3
 
     datestamp = (datetime.strptime(kwargs['ds'], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y%m%d")
-
     table_name = f"{transaction_type}_{datestamp}"
-
     filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
 
     print(f"Creating file: {filepath}")
@@ -1469,12 +1492,12 @@ def aggregate_bimonthly_adjustments(**kwargs):
 
 
 @task
-def create_affiliate_table(**kwargs):
+def create_commission_table(**kwargs):
     import sqlite3
 
     datestamp = kwargs['ds_nodash']
     table_name = f"affiliate_{datestamp}"
-    filepath = f"{SQLITE_AFFILIATE_PATH}/{table_name}.db"
+    filepath = f"{SQLITE_COMMISSION_PATH}/{table_name}.db"
 
     conn = sqlite3.connect(filepath)
 
@@ -1491,6 +1514,7 @@ def create_affiliate_table(**kwargs):
         curs.execute(f"""
                      CREATE TABLE {table_name} (
                          affiliate_id integer,
+                         login_name text,
                          amount real,
                          currency text
                      )
@@ -1505,7 +1529,7 @@ def save_affiliate_fees(affiliate_df: DataFrame, **kwargs):
 
     datestamp = kwargs['ds_nodash']
     table_name = f"affiliate_{datestamp}"
-    filepath = f"{SQLITE_AFFILIATE_PATH}/{table_name}.db"
+    filepath = f"{SQLITE_COMMISSION_PATH}/{table_name}.db"
 
     print(f"Connecting to: {filepath}")
     conn = sqlite3.connect(filepath)
@@ -1535,6 +1559,11 @@ def get_aggregated_transactions(datestamp):
         
         df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
 
+        if transaction_type == TRANSACTION_TYPE_ADJUSTMENT:
+            df = df.rename(columns={'amount': 'other_fee'})
+        else:
+            df = df.rename(columns={'amount': 'expenses'})
+
         transaction_df = pd.concat([transaction_df, df])
 
     return transaction_df
@@ -1554,6 +1583,8 @@ def get_aggregated_wagers(datestamp):
         
         df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
 
+        df = df.rename(columns={'win_loss': 'company_win_loss'})
+
         wager_df = pd.concat([wager_df, df])
 
     return wager_df
@@ -1570,6 +1601,44 @@ def get_aggregated_adjustments(datestamp):
     
     df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
 
+    df = df.rename(columns={'amount': 'total_adjustment'})
+
+    return df
+
+
+@task
+def update_affiliate_table():
+    import sqlite3
+
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    raw_sql = f"""
+        SELECT 
+            affiliate_id,
+            login_name as affiliate_name,
+            commission_tier1,
+            commission_tier2,
+            commission_tier3,
+            payout_frequency,
+            min_active_player
+        FROM affiliate_account
+    """
+
+    affiliate_df = conn_affiliate_pg_hook.get_pandas_df(raw_sql)
+
+    table_name = "affiliate"
+    conn = sqlite3.connect(SQLITE_AFFILIATE_ACCOUNT_FILEPATH)
+
+    affiliate_df.to_sql(table_name, conn, if_exists='replace')
+
+
+def get_affiliate_df():
+    import sqlite3
+    import pandas as pd
+
+    conn = sqlite3.connect(SQLITE_AFFILIATE_ACCOUNT_FILEPATH)
+    df = pd.read_sql(f"SELECT * FROM affiliate", conn)
+
     return df
 
     
@@ -1582,20 +1651,18 @@ def calculate_affiliate_fees(**kwargs):
     wager_df = get_aggregated_wagers(datestamp)
     adjustment_df = get_aggregated_adjustments(datestamp)
 
-    transaction_df = transaction_df.rename(columns={'amount': 'expenses'})
-    adjustment_df = adjustment_df.rename(columns={'amount': 'adjustment'})
+    commission_df = transaction_df.merge(wager_df, how='left', on=['affiliate_id', 'currency'])
+    commission_df = commission_df.merge(adjustment_df, how='left', on=['affiliate_id', 'currency'])
 
-    affiliate_df = transaction_df.merge(wager_df, how='left', on=['affiliate_id', 'currency'])
-    affiliate_df = affiliate_df.merge(adjustment_df, how='left', on=['affiliate_id', 'currency'])
+    commission_df = commission_df.fillna(0)
 
-    affiliate_df = affiliate_df.fillna(0)
-
-    affiliate_df['total_affiliate_fee'] = affiliate_df['adjustment'] - affiliate_df['win_loss'] - affiliate_df['expenses']
+    commission_df['total_affiliate_fee'] = commission_df['adjustment'] - commission_df['win_loss'] - commission_df['expenses']
 
     conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
     engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
 
-    affiliate_df.to_sql(AFFILIATE_TABLE, engine_affiliate, if_exists='append', index=False)
+    # Todo: Add Missing Table Columns
+    commission_df.to_sql(AFFILIATE_TABLE, engine_affiliate, if_exists='append', index=False)
 
 
 @dag(
@@ -1632,7 +1699,7 @@ def monthly_commission():
         transaction_task_group(TRANSACTION_TYPE_ADJUSTMENT, get_adjustment_data)()
     
     @task_group
-    def aggregate_transactions():
+    def aggregate_transactions_group():
 
         def transaction_aggregation(transaction_type):
             @task_group(group_id=transaction_type)
@@ -1737,9 +1804,10 @@ def monthly_commission():
         get_wagers()
         get_adjustments()
 
+    # Todo: Pass a payout argument and create a get_datestamps that uses that argument to produce.. well.. datestamps
     @task_group
     def bi_monthly_aggregation():
-        aggregate_transactions()
+        aggregate_transactions_group()
         aggregate_wagers()
         aggregate_adjustments()
 
