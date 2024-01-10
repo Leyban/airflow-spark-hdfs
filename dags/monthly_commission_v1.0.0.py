@@ -1,5 +1,5 @@
-# Todo: Implement Commission Tier on Win Loss
 # Todo: Implement Minimum Players
+    # rollover_next_month
 # Todo: Implement Payout Frequency
 # Todo: Implement Weekly, Bi-Monthly, and Monthly Option based on Affiliate
 # Todo: Implement Idempotency
@@ -10,9 +10,23 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.exceptions import AirflowSkipException
 from airflow.utils.trigger_rule import TriggerRule
 from datetime import  datetime,timedelta
-from pandas import DataFrame
+from pandas import DataFrame, Series
 
-# Payout
+
+# Constants
+DEFAULT_PLATFORM_FEE = 2
+COMMISSION_STATUS_THRESHOLD = 2
+COMMISSION_PAYMENT_STATUS_THRESHOLD = 2
+
+DEFAULT_COMMISSION_MAX_NET_TIER1 = 10000
+DEFAULT_COMMISSION_MAX_NET_TIER2 = 100000
+
+DEFAULT_MIN_ACTIVE_PLAYER = 5
+
+# Payout Frequency
+PAYOUT_FREQUENCY_WEEKLY = 'weekly'
+PAYOUT_FREQUENCY_BI_MONTHLY = 'bi_monthly'
+PAYOUT_FREQUENCY_MONTHLY = 'monthly'
 WEEKLY_DAY = 1
 BI_MONTHLY_DAY = 8
 MONTHLY_DAY = 1
@@ -32,7 +46,8 @@ WITHDRAWAL_STATUS_SUCCESSFUL = 6
 DEPOSIT_STATUS_SUCCESSFUL = 2
 
 # Table Names
-AFFILIATE_TABLE = "adjustment"
+AFFILIATE_TABLE = "affiliate"
+COMMISSION_TABLE = "cm_commission"
 
 ADJUSTMENT_TABLE = "adjustment"
 
@@ -168,6 +183,7 @@ def init_sqlite():
         create_member_table_sql = """
             CREATE TABLE affiliate(
                     affiliate_id integer,
+                    login_name text,
                     commission_tier1 integer,
                     commission_tier2 integer,
                     commission_tier3 integer,
@@ -349,8 +365,9 @@ def create_bimonthly_wager_table(product: str, **kwargs):
     if len( tables ) == 0:
         curs.execute(f"""
                      CREATE TABLE {table_name} (
-                         win_loss real, 
                          affiliate_id integer,
+                         win_loss real, 
+                         total_members integer,
                          currency text
                      )
                      """)
@@ -381,8 +398,9 @@ def create_daily_wager_table(product: str, **kwargs):
     if len( tables ) == 0:
         curs.execute(f"""
                      CREATE TABLE {table_name} (
-                         win_loss real, 
                          affiliate_id integer,
+                         win_loss real, 
+                         total_members integer,
                          currency text
                      )
                      """)
@@ -1275,7 +1293,13 @@ def update_wager_table(product, fetch_wager_func, **kwargs):
         print("No new data found")
         raise AirflowSkipException
 
+    # Group by member
+    wager_df = wager_df.groupby(['affiliate_id', 'currency', 'login_name']).sum().reset_index()
+
     wager_df = wager_df.drop(columns=['login_name']).reset_index()
+    wager_df['total_members'] = 1
+
+    # Group by affiliate
     wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum()
     
     save_wager_to_sqlite(product, wager_df, datestamp)
@@ -1615,7 +1639,7 @@ def update_affiliate_table():
     raw_sql = f"""
         SELECT 
             affiliate_id,
-            login_name as affiliate_name,
+            login_name,
             commission_tier1,
             commission_tier2,
             commission_tier3,
@@ -1641,22 +1665,147 @@ def get_affiliate_df():
 
     return df
 
+
+def calc_total_amount(row: Series):
+    total_amount = 0
+    grand_total = 0
+
+    if row['net_company_win_loss'] < DEFAULT_COMMISSION_MAX_NET_TIER1:
+        total_amount = row['net_company_win_loss'] * row['commission_tier1']
+
+    elif row['net_company_win_loss'] < DEFAULT_COMMISSION_MAX_NET_TIER2:
+        tier2_win_loss = row['net_company_win_loss'] - DEFAULT_COMMISSION_MAX_NET_TIER1
+
+        total_amount = DEFAULT_COMMISSION_MAX_NET_TIER1 * row['commission_tier1']
+        total_amount += tier2_win_loss * row['commission_tier2']
+
+    else:
+        tier2_win_loss = DEFAULT_COMMISSION_MAX_NET_TIER2 - DEFAULT_COMMISSION_MAX_NET_TIER1
+        tier3_win_loss = row['net_company_win_loss'] - DEFAULT_COMMISSION_MAX_NET_TIER1 - DEFAULT_COMMISSION_MAX_NET_TIER2
+
+        total_amount = DEFAULT_COMMISSION_MAX_NET_TIER1 * row['commission_tier1']
+        total_amount += tier2_win_loss * row['commission_tier2']
+        total_amount += tier3_win_loss * row['commission_tier3']
+
+    grand_total = total_amount
+
+    return grand_total
+
+
+def calc_net_company_win_loss(row: Series):
+    platform_fee = row.company_win_loss * DEFAULT_PLATFORM_FEE * 0.01
+
+    temp_platform_fee = 0
+    if platform_fee > 0:
+        temp_platform_fee = platform_fee
+
+    fee_total = row.expenses + row.other_fee + temp_platform_fee
+
+    net_company_win_loss = row.company_win_loss - fee_total
+
+    return net_company_win_loss
+
+
+def get_previous_settlement_df(from_transaction_date, to_transaction_date)->DataFrame:
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    raw_sql = f"""
+        SELECT
+            DISTINCT ON(cm.affiliate_id) cm.affiliate_id,
+            cm.rollover_next_month as previous_settlement
+        FROM {COMMISSION_TABLE} as cm
+		LEFT JOIN affiliate_account as aa ON aa.affiliate_id = cm.affiliate_id
+        WHERE commission_status = {COMMISSION_STATUS_THRESHOLD}
+        AND from_transaction_date = '{from_transaction_date}'
+        AND to_transaction_date = '{to_transaction_date}'
+        AND (cm.total_members_stake >= aa.min_active_player or (aa.min_active_player IS NULL AND cm.total_members_stake >= {DEFAULT_MIN_ACTIVE_PLAYER}))
+    """
+
+    df = conn_affiliate_pg_hook.get_pandas_df(raw_sql)
+
+    return df
+
+
+def get_transaction_dates(payout_frequency: str, exec_date: datetime):
+    import calendar
+
+    to_date: datetime
+    from_date: datetime
+    prev_to_date: datetime
+    prev_from_date: datetime
+    
+    if payout_frequency == PAYOUT_FREQUENCY_WEEKLY:
+        to_date = exec_date - timedelta(days=1)
+        from_date = to_date - timedelta(days=6)
+
+        prev_to_date = from_date - timedelta(days=1)
+        prev_from_date = prev_to_date - timedelta(days=6)
+
+    elif payout_frequency == PAYOUT_FREQUENCY_MONTHLY:
+        to_date = exec_date - timedelta(days=1)
+
+        year = to_date.year
+        month = to_date.month
+        num_days = calendar.monthrange(year, month)[1]
+
+        from_date = to_date - timedelta(days=num_days-1)
+
+        prev_to_date = from_date - timedelta(days=1)
+
+        prev_year = prev_to_date.year
+        prev_month = prev_to_date.month
+        num_days = calendar.monthrange(prev_year, prev_month)[1]
+
+        prev_from_date = prev_to_date - timedelta(days=num_days-1)
+
+    else: # BI_MONTHLY
+        if exec_date.day == 1:
+            to_date = exec_date - timedelta(days=1)
+            from_date = to_date.replace(day=15)
+
+            prev_to_date = from_date - timedelta(days=1)
+            prev_from_date = prev_to_date.replace(day=1)
+
+        else:
+            to_date = exec_date - timedelta(days=1)
+            from_date = to_date.replace(day=1)
+
+            prev_to_date = from_date - timedelta(days=1)
+            prev_from_date = prev_to_date.replace(day=15)
+
+    return prev_from_date.strftime("%Y-%m-%d"), prev_to_date.strftime("%Y-%m-%d"), from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d")
+
     
 @task
-def calculate_affiliate_fees(**kwargs):
+def calculate_affiliate_fees(payout_frequency, **kwargs):
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
     datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
+
+    prev_from_transaction_date, prev_to_transaction_date, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, exec_date)
     
     transaction_df: DataFrame = get_aggregated_transactions(datestamp)
     wager_df = get_aggregated_wagers(datestamp)
     adjustment_df = get_aggregated_adjustments(datestamp)
 
+    prev_settlement_df = get_previous_settlement_df(prev_from_transaction_date, prev_to_transaction_date)
+    affiliate_df = get_affiliate_df()
+
     commission_df = transaction_df.merge(wager_df, how='left', on=['affiliate_id', 'currency'])
     commission_df = commission_df.merge(adjustment_df, how='left', on=['affiliate_id', 'currency'])
+    commission_df = commission_df.merge(prev_settlement_df, how='left', on=['affiliate_id'])
+    commission_df = commission_df.merge(affiliate_df, how='inner', on=['affiliate_id'])
 
     commission_df = commission_df.fillna(0)
 
+    commission_df['net_company_win_loss'] = commission_df.apply(lambda x: calc_net_company_win_loss(x), axis=1)
+    commission_df['grand_total'] = commission_df.apply(lambda x: calc_total_amount(x), axis=1)
+    commission_df['grand_total'] = commission_df.apply(lambda x: x['grand_total'] + x['previous_settlement'] 
+                                                       if x['total_members'] > x['min_active_player'] else x['grand_total'], axis=1)
+
     commission_df['total_affiliate_fee'] = commission_df['adjustment'] - commission_df['win_loss'] - commission_df['expenses']
+
+    commission_df['from_transaction_date'] = from_transaction_date
+    commission_df['to_transaction_date'] = to_transaction_date
 
     conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
     engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
