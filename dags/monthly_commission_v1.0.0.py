@@ -1,5 +1,5 @@
-# Todo: Implement Minimum Players
-    # rollover_next_month
+# Todo: Implement Minimum Players -- check
+    # rollover_next_month -- check
 # Todo: Implement Payout Frequency
 # Todo: Implement Weekly, Bi-Monthly, and Monthly Option based on Affiliate
 # Todo: Implement Idempotency
@@ -22,6 +22,10 @@ DEFAULT_COMMISSION_MAX_NET_TIER1 = 10000
 DEFAULT_COMMISSION_MAX_NET_TIER2 = 100000
 
 DEFAULT_MIN_ACTIVE_PLAYER = 5
+DEFAULT_COMMISSION_MIN_NET = 100
+
+COMMISSION_STATUS_PROCESSING = 1
+COMMISSION_PAYMENT_STATUS_PROCESSING = 1
 
 # Payout Frequency
 PAYOUT_FREQUENCY_WEEKLY = 'weekly'
@@ -341,16 +345,11 @@ def get_members_from_sqlite() -> DataFrame:
 
 
 @task(trigger_rule=TriggerRule.ALL_DONE)
-def create_bimonthly_wager_table(product: str, **kwargs):
-    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
-    if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
-        print("Will only run on 1st and 15th day of the month")
-        raise AirflowSkipException
-
+def create_scheduled_wager_table(product: str, payout_frequency: str, **kwargs):
     import sqlite3
 
     datestamp = kwargs['ds_nodash']
-    table_name = f"{product}_{datestamp}_{exec_date.day}"
+    table_name = f"{product}_{payout_frequency}_{datestamp}"
     filepath = f"{SQLITE_WAGERS_PATH}/{product}/{table_name}.db"
 
     print(f"Creating file: {filepath}")
@@ -410,17 +409,12 @@ def create_daily_wager_table(product: str, **kwargs):
 
 
 @task(trigger_rule=TriggerRule.ALL_DONE)
-def create_bimonthly_transaction_table(transaction_type, **kwargs):
-    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
-    if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
-        print(f"Will only run on 1st and {BI_MONTHLY_DAY}th day of the month")
-        raise AirflowSkipException
-
+def create_scheduled_transaction_table(transaction_type, payout_frequency, **kwargs):
     import sqlite3
 
     datestamp = kwargs['ds_nodash']
 
-    table_name = f"{transaction_type}_{datestamp}_{exec_date.day}"
+    table_name = f"{transaction_type}_{payout_frequency}_{datestamp}"
 
     filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
 
@@ -652,13 +646,13 @@ def get_allbet_wager(date_from, date_to) -> DataFrame:
 
 
 @task
-def aggregate_bimonthly_transactions(transaction_type, **kwargs):
+def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: str, **kwargs):
     import sqlite3
     import pandas as pd
 
-    monthly_transactions = pd.DataFrame()
+    aggregated_transactions = pd.DataFrame()
 
-    datestamps = get_datestamps(**kwargs)
+    datestamps = get_datestamps(payout_frequency, **kwargs)
 
     for datestamp in datestamps:
         table_name = f"{transaction_type}_{datestamp}"
@@ -672,22 +666,22 @@ def aggregate_bimonthly_transactions(transaction_type, **kwargs):
         res = curs.execute(get_table_list)
         tables = res.fetchall()
 
-        if len( tables ) != 0:
+        if len(tables) != 0:
             daily_transactions = pd.read_sql(f"SELECT * FROM {table_name}", conn)
             print(f"{daily_transactions.shape[0]} Affiliates Updated on {datestamp}")
 
-            monthly_transactions = pd.concat([monthly_transactions, daily_transactions])
+            aggregated_transactions = pd.concat([aggregated_transactions, daily_transactions])
 
-    if monthly_transactions.shape[0] == 0:
+    if aggregated_transactions.shape[0] == 0:
         print("No Wager Data Found")
         raise AirflowSkipException
 
-    monthly_transactions = monthly_transactions.groupby(['affiliate_id', 'currency']).sum().reset_index()
+    aggregated_transactions = aggregated_transactions.groupby(['affiliate_id', 'currency']).sum().reset_index()
     
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
-    datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
+    datestamp = payout_frequency + "_" + exec_date.strftime("%Y%m%d")
 
-    save_transaction_to_sqlite(transaction_type, monthly_transactions, datestamp)
+    save_transaction_to_sqlite(transaction_type, aggregated_transactions, datestamp)
 
 
 def get_asiagaming_wager(date_from, date_to) -> DataFrame:
@@ -1218,35 +1212,20 @@ def get_digitain_wager(date_from, date_to) -> DataFrame:
     return df
 
 
-def get_datestamps(**kwargs):
-    import calendar
-
-    year, month = 0, 0
+def get_datestamps(payout_frequency, **kwargs):
     datestamps = []
+    exec_date = datetime.strptime(kwargs['ds'], '%Y-%m-%d')
 
-    exec_date = datetime.strptime(kwargs['ds'], '%Y-%m-%d').replace(
-            hour=UTC_EXEC_TIME,
-            minute=0,
-            second=0,
-            microsecond=0
-            )
+    _, _, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, exec_date)
 
-    if exec_date.day == BI_MONTHLY_DAY:
-        year = exec_date.year
-        month = exec_date.month
+    from_date = datetime.strptime(from_transaction_date, "%Y%m%d")
+    to_date = datetime.strptime(to_transaction_date, "%Y%m%d")
 
-        for day in range(BI_MONTHLY_DAY):
-            datestamp = exec_date.replace(day=day +1).strftime("%Y%m%d")
-            datestamps.append(datestamp)
-
-    if exec_date.day == 1:
-        year = (exec_date - timedelta(days=1)).year
-        month = (exec_date - timedelta(days=1)).month
-        num_days = calendar.monthrange(year, month)[1]
-
-        for day in range(BI_MONTHLY_DAY - 1,num_days):
-            datestamp = exec_date.replace(day=day+1).strftime("%Y%m%d")
-            datestamps.append(datestamp)
+    date_iter = from_date
+    while date_iter <= to_date:
+        datestamp = date_iter.strftime("%Y%m%d")
+        datestamps.append(datestamp)
+        date_iter += timedelta(days=1)
 
     return datestamps
 
@@ -1306,7 +1285,7 @@ def update_wager_table(product, fetch_wager_func, **kwargs):
 
 
 @task
-def aggregate_bimonthly_wagers(product, **kwargs):
+def aggregate_scheduled_wagers(product, payout_frequency, **kwargs):
     import sqlite3
     import pandas as pd
 
@@ -1339,13 +1318,13 @@ def aggregate_bimonthly_wagers(product, **kwargs):
     wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
 
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
-    datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
+    datestamp = payout_frequency + "_" + exec_date.strftime("%Y%m%d")
 
     save_wager_to_sqlite(product, wager_df, datestamp)
 
 
 @task(trigger_rule=TriggerRule.ALL_DONE)
-def create_bimonthly_adjustment_table(**kwargs):
+def create_scheduled_adjustment_table(**kwargs):
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
     print(exec_date.day)
     if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
@@ -1475,7 +1454,7 @@ def update_adjustment_table(**kwargs):
 
 
 @task
-def aggregate_bimonthly_adjustments(**kwargs):
+def aggregate_scheduled_adjustments(**kwargs):
     import sqlite3
     import pandas as pd
 
@@ -1631,6 +1610,26 @@ def get_aggregated_adjustments(datestamp):
 
 
 @task
+def check_schedule(payout_frequency:str, **kwargs):
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+
+    if payout_frequency == PAYOUT_FREQUENCY_WEEKLY:
+        if exec_date.weekday != WEEKLY_DAY:
+            print("Skipping Today")
+            raise AirflowSkipException
+
+    if payout_frequency == PAYOUT_FREQUENCY_MONTHLY:
+        if exec_date.day != MONTHLY_DAY:
+            print("Skipping Today")
+            raise AirflowSkipException
+
+    if payout_frequency == PAYOUT_FREQUENCY_MONTHLY:
+        if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
+            print("Skipping Today")
+            raise AirflowSkipException
+
+
+@task
 def update_affiliate_table():
     import sqlite3
 
@@ -1668,7 +1667,6 @@ def get_affiliate_df():
 
 def calc_total_amount(row: Series):
     total_amount = 0
-    grand_total = 0
 
     if row['net_company_win_loss'] < DEFAULT_COMMISSION_MAX_NET_TIER1:
         total_amount = row['net_company_win_loss'] * row['commission_tier1']
@@ -1687,9 +1685,23 @@ def calc_total_amount(row: Series):
         total_amount += tier2_win_loss * row['commission_tier2']
         total_amount += tier3_win_loss * row['commission_tier3']
 
-    grand_total = total_amount
+    row['grand_total'] = total_amount
 
-    return grand_total
+    if row['total_members_stake'] < row['min_active_player']:
+        row['rollover_next_month'] = row.previous_settlement
+
+    else:
+        row['grand_total'] = row['grand_total'] + row.previous_settlement
+
+        if row['grand_total'] < DEFAULT_COMMISSION_MIN_NET:
+            row['rollover_next_month'] = row['grand_total']
+
+        else:
+            row['commission_status'] = COMMISSION_STATUS_PROCESSING
+            row['payment_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
+            row['rollover_next_month'] = 0
+
+    return row
 
 
 def calc_net_company_win_loss(row: Series):
@@ -1798,9 +1810,7 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     commission_df = commission_df.fillna(0)
 
     commission_df['net_company_win_loss'] = commission_df.apply(lambda x: calc_net_company_win_loss(x), axis=1)
-    commission_df['grand_total'] = commission_df.apply(lambda x: calc_total_amount(x), axis=1)
-    commission_df['grand_total'] = commission_df.apply(lambda x: x['grand_total'] + x['previous_settlement'] 
-                                                       if x['total_members'] > x['min_active_player'] else x['grand_total'], axis=1)
+    commission_df = commission_df.apply(lambda x: calc_total_amount(x), axis=1)
 
     commission_df['total_affiliate_fee'] = commission_df['adjustment'] - commission_df['win_loss'] - commission_df['expenses']
 
@@ -1848,16 +1858,16 @@ def monthly_commission():
         transaction_task_group(TRANSACTION_TYPE_ADJUSTMENT, get_adjustment_data)()
     
     @task_group
-    def aggregate_transactions_group():
+    def aggregate_transactions_group(payout_frequency):
 
         def transaction_aggregation(transaction_type):
             @task_group(group_id=transaction_type)
             def aggregate_transactions_task_group():
 
-                create_monthly_table = create_bimonthly_transaction_table(transaction_type)
-                aggregate_transactions_monthly = aggregate_bimonthly_transactions(transaction_type)
+                create_monthly_table = create_scheduled_transaction_table(transaction_type, payout_frequency)
+                aggregate_transactions_task = aggregate_scheduled_transactions(transaction_type, payout_frequency)
 
-                create_monthly_table >> aggregate_transactions_monthly
+                create_monthly_table >> aggregate_transactions_task
 
             return aggregate_transactions_task_group
 
@@ -1900,16 +1910,16 @@ def monthly_commission():
         wager_task_group(PRODUCT_CODE_DIGITAIN, get_digitain_wager)()
 
     @task_group
-    def aggregate_wagers():
+    def aggregate_wagers(payout_frequency):
 
         def wager_aggregation(product):
             @task_group(group_id=product)
             def aggregate_wagers_task_group():
 
-                create_monthly_table = create_bimonthly_wager_table(product)
-                aggregate_wagers_monthly = aggregate_bimonthly_wagers(product)
+                create_monthly_table = create_scheduled_wager_table(product, payout_frequency)
+                aggregate_wagers_task = aggregate_scheduled_wagers(product, payout_frequency)
 
-                create_monthly_table >> aggregate_wagers_monthly
+                create_monthly_table >> aggregate_wagers_task
 
             return aggregate_wagers_task_group
 
@@ -1941,11 +1951,11 @@ def monthly_commission():
         create_daily_table >> update_daily_table
 
     @task_group
-    def aggregate_adjustments():
-        create_monthly_table = create_bimonthly_adjustment_table()
-        aggregate_adjustments_monthly = aggregate_bimonthly_adjustments()
+    def aggregate_adjustments(payout_frequency):
+        create_monthly_table = create_scheduled_adjustment_table(payout_frequency)
+        aggregate_adjustments_task = aggregate_scheduled_adjustments(payout_frequency)
 
-        create_monthly_table >> aggregate_adjustments_monthly
+        create_monthly_table >> aggregate_adjustments_task
 
     @task_group
     def daily_data_gathering():
@@ -1953,13 +1963,33 @@ def monthly_commission():
         get_wagers()
         get_adjustments()
 
-    # Todo: Pass a payout argument and create a get_datestamps that uses that argument to produce.. well.. datestamps
-    @task_group
-    def bi_monthly_aggregation():
-        aggregate_transactions_group()
-        aggregate_wagers()
-        aggregate_adjustments()
 
-    init_sqlite_task >> daily_data_gathering() >> bi_monthly_aggregation()
+    @task_group
+    def scheduled_calculation(payout_frequency):
+
+        def timely_aggregation():
+            @task_group(group_id=f"{payout_frequency}_aggregation")
+            def bi_monthly_aggregation():
+                aggregate_transactions_group(payout_frequency)
+                aggregate_wagers(payout_frequency)
+                aggregate_adjustments(payout_frequency)
+
+            return bi_monthly_aggregation
+
+        schedule_checker = check_schedule(payout_frequency)
+        scheduled_aggregation = timely_aggregation()()
+
+        schedule_checker >> scheduled_aggregation 
+
+    daily_data_gathering_task = daily_data_gathering()
+
+    init_sqlite_task >> daily_data_gathering_task
+
+    # daily_data_gathering_task >> [
+    #         scheduled_calculation(PAYOUT_FREQUENCY_WEEKLY),
+    #         scheduled_calculation(PAYOUT_FREQUENCY_MONTHLY),
+    #         scheduled_calculation(PAYOUT_FREQUENCY_BI_MONTHLY)
+    #         ]
+
 
 monthly_commission()
