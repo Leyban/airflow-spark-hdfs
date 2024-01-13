@@ -1324,18 +1324,12 @@ def aggregate_scheduled_wagers(product, payout_frequency, **kwargs):
 
 
 @task(trigger_rule=TriggerRule.ALL_DONE)
-def create_scheduled_adjustment_table(**kwargs):
-    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
-    print(exec_date.day)
-    if exec_date.day != 1 and exec_date.day != BI_MONTHLY_DAY:
-        print("Will only run on 1st and 15th day of the month")
-        raise AirflowSkipException
-
+def create_scheduled_adjustment_table(payout_frequency: str, **kwargs):
     import sqlite3
 
     datestamp = kwargs['ds_nodash']
 
-    table_name = f"adjustment_{datestamp}_{exec_date.day}"
+    table_name = f"adjustment_{payout_frequency}_{datestamp}"
 
     filepath = f"{SQLITE_ADJUSTMENTS_PATH}/{table_name}.db"
 
@@ -1454,7 +1448,7 @@ def update_adjustment_table(**kwargs):
 
 
 @task
-def aggregate_scheduled_adjustments(**kwargs):
+def aggregate_scheduled_adjustments(payout_frequency: str, **kwargs):
     import sqlite3
     import pandas as pd
 
@@ -1489,7 +1483,7 @@ def aggregate_scheduled_adjustments(**kwargs):
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
     datestamp = exec_date.strftime("%Y%m%d") + f"_{exec_date.day}"
 
-    table_name = f"adjustment_{datestamp}_{exec_date.day}"
+    table_name = f"adjustment_{payout_frequency}_{datestamp}"
 
     save_adjustment_to_sqlite(monthly_transactions, datestamp)
 
@@ -1979,17 +1973,17 @@ def monthly_commission():
         schedule_checker = check_schedule(payout_frequency)
         scheduled_aggregation = timely_aggregation()()
 
-        schedule_checker >> scheduled_aggregation 
+        schedule_checker >> scheduled_aggregation
 
     daily_data_gathering_task = daily_data_gathering()
 
     init_sqlite_task >> daily_data_gathering_task
 
-    # daily_data_gathering_task >> [
-    #         scheduled_calculation(PAYOUT_FREQUENCY_WEEKLY),
-    #         scheduled_calculation(PAYOUT_FREQUENCY_MONTHLY),
-    #         scheduled_calculation(PAYOUT_FREQUENCY_BI_MONTHLY)
-    #         ]
+    daily_data_gathering_task >> [
+            scheduled_calculation(PAYOUT_FREQUENCY_WEEKLY),
+            scheduled_calculation(PAYOUT_FREQUENCY_MONTHLY),
+            scheduled_calculation(PAYOUT_FREQUENCY_BI_MONTHLY)
+            ]
 
 
 monthly_commission()

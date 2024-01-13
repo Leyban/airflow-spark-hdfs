@@ -10,7 +10,11 @@ def create_pgsoft_summary_table(**kwargs):
     import sqlite3
     import os
 
-    filepath, dir = get_filepath(kwargs['ds'])
+    ds = kwargs['ds']
+    if 'custom_ds' in kwargs['params']:
+        ds = kwargs['params']['custom_ds']
+
+    filepath, dir = get_filepath(ds)
 
     if not os.path.exists(dir):
         os.remove(filepath)
@@ -54,23 +58,21 @@ def get_filepath(ds):
     return filepath, dir
 
 
-def get_pgsoft_week(date: datetime, **kwargs):
+def get_pgsoft_day(date: datetime, **kwargs):
     import pandas as pd
     import numpy as np
     import sqlite3
     import os
 
-    week_later = date + timedelta(days=7) 
-    num_days = get_num_days(**kwargs)
-    month = date.month
+    next_day = date + timedelta(days=1) 
 
-    if week_later.month != month:
-        week_later = date.replace(day=num_days) + timedelta(days=1)
+    ds = kwargs['ds']
+    if 'custom_ds' in kwargs['params']:
+        ds = kwargs['params']['custom_ds']
 
     date_from = date.strftime('%Y-%m-%d')
-    date_to = week_later.strftime('%Y-%m-%d')
+    date_to = next_day.strftime('%Y-%m-%d')
 
-    print("Collecting Data")
     print("date from: ", date_from)
     print("date to: ", date_to)
 
@@ -86,9 +88,9 @@ def get_pgsoft_week(date: datetime, **kwargs):
         AND bet_time < '{date_to}'
     """
 
-    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
+    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
 
-    df: DataFrame = conn_wager_pg_hook.get_pandas_df(raw_sql)
+    df: DataFrame = conn_collector_pg_hook.get_pandas_df(raw_sql)
 
     print(f"Found {df.shape[0]} rows of data")
     if df.empty:
@@ -105,7 +107,7 @@ def get_pgsoft_week(date: datetime, **kwargs):
 
     df = df.rename(columns={'bet_time': 'last_bet_time'}).reset_index()
 
-    filepath, _, = get_filepath(kwargs['ds'])
+    filepath, _, = get_filepath(ds)
 
     conn = sqlite3.connect(filepath)
 
@@ -129,7 +131,11 @@ def get_pgsoft_week(date: datetime, **kwargs):
 def get_num_days(**kwargs):
     import calendar
 
-    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    ds = kwargs['ds']
+    if 'custom_ds' in kwargs['params']:
+        ds = kwargs['params']['custom_ds']
+
+    exec_date = datetime.strptime(ds, "%Y-%m-%d")
 
     last_month = exec_date.replace(day=1) - timedelta(days=1)
     year = last_month.year
@@ -141,14 +147,18 @@ def get_num_days(**kwargs):
 
 
 @task
-def summarize_weekly(**kwargs):
-    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+def summarize_daily(**kwargs):
+    ds = kwargs['ds']
+    if 'custom_ds' in kwargs['params']:
+        ds = kwargs['params']['custom_ds']
+
+    exec_date = datetime.strptime(ds, "%Y-%m-%d")
     date_iter = ( exec_date.replace(day=1) - timedelta(days=1) ).replace(day=1)
     month = date_iter.month
 
     while date_iter.month == month:
-        get_pgsoft_week(date_iter,  **kwargs)
-        date_iter += timedelta(days=7)
+        get_pgsoft_day(date_iter,  **kwargs)
+        date_iter += timedelta(days=1)
 
 
 @task
@@ -157,9 +167,13 @@ def summarize_month(**kwargs):
     import numpy as np
     import sqlite3
 
-    filepath, _  = get_filepath(kwargs['ds'])
+    ds = kwargs['ds']
+    if 'custom_ds' in kwargs['params']:
+        ds = kwargs['params']['custom_ds']
 
-    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    filepath, _  = get_filepath(ds)
+
+    exec_date = datetime.strptime(ds, "%Y-%m-%d")
     date_from = (exec_date.replace(day=1) - timedelta(days=1)).replace(day=1)
     date_to = exec_date.replace(day=1)
 
@@ -178,8 +192,8 @@ def summarize_month(**kwargs):
         'last_bet_time': np.max,
         }).reset_index()
 
-    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
-    engine_wager = conn_wager_pg_hook.get_sqlalchemy_engine()
+    conn_collector_pg_hook = PostgresHook(postgres_conn_id='collector_conn_id')
+    engine_collector = conn_collector_pg_hook.get_sqlalchemy_engine()
 
     # Clear any previous summary for the month
     raw_sql = f"""
@@ -188,9 +202,9 @@ def summarize_month(**kwargs):
         AND last_bet_time < '{date_to}'
     """
     print("Deleting date from:", date_from, "\ndate to:", date_to)
-    conn_wager_pg_hook.run(raw_sql)
+    conn_collector_pg_hook.run(raw_sql)
 
-    df.to_sql("pgsoft_summary", engine_wager, if_exists='append', index=False)
+    df.to_sql("pgsoft_summary", engine_collector, if_exists='append', index=False)
 
 
 @dag(
@@ -198,18 +212,16 @@ def summarize_month(**kwargs):
     description='Summarizes the player info for each month',
     schedule="@monthly",
     start_date=datetime(2022, 12, 31),
-    catchup=True,
+    catchup=False,
     max_active_runs=1,
     max_active_tasks=1,
     )
 def monthly_summary():
-    print("Intentional Failure")
-    raise AirflowSkipException
     
     init = create_pgsoft_summary_table()
-    summarize_weeks = summarize_weekly()
+    summarize_days = summarize_daily()
     summarize_final = summarize_month()
 
-    init >> summarize_weeks >> summarize_final
+    init >> summarize_days >> summarize_final
 
 monthly_summary()
