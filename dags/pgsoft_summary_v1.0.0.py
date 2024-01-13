@@ -1,5 +1,5 @@
 from airflow.decorators import dag, task
-from airflow.exceptions import AirflowFailException, AirflowSkipException
+from airflow.exceptions import  AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime, timedelta
 from pandas import DataFrame
@@ -204,7 +204,7 @@ def summarize_month(**kwargs):
     )
 def monthly_summary():
     print("Intentional Failure")
-    raise AirflowFailException
+    raise AirflowSkipException
     
     init = create_pgsoft_summary_table()
     summarize_weeks = summarize_weekly()
