@@ -204,7 +204,7 @@ def summarize_month(**kwargs):
     )
 def monthly_summary():
     print("Intentional Failure")
-    # raise AirflowFailException
+    raise AirflowFailException
     
     init = create_pgsoft_summary_table()
     summarize_weeks = summarize_weekly()
