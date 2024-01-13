@@ -1828,7 +1828,7 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     dag_id='monthly_commission-v1.0.0_testzone',
     description='Calculates commission for affiliates every month',
     schedule="@monthly",
-    start_date=datetime(2021, 1, 1),
+    start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1,
     max_active_tasks=5,
