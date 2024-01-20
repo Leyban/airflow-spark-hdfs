@@ -442,7 +442,7 @@ func createDummyAffiliate(affiliateID int64) (int64, error) {
 	comT1 := float64(RandInt(40))
 	comT2 := comT1 + float64(RandInt(10))
 	comT3 := comT2 + float64(RandInt(10))
-	payoutFrequency := RandSelect([]string{"monthly", "bi_monthly"})
+	payoutFrequency := RandSelect([]string{"monthly", "bi_monthly", "weekly"})
 	minActivePlayer := 5 + RandInt(5)
 	isInternalAff := RandSelect([]bool{true, false})
 	playerName := RandString(15)
@@ -941,7 +941,7 @@ func generateTransactionMembers() {
 }
 
 func main() {
-	// generateWagerMembers()
-	// generateTransactionMembers()
+	generateWagerMembers()
+	generateTransactionMembers()
 	copyMembersToPaymentDB()
 }

@@ -28,7 +28,8 @@ x-airflow-common:
   # Comment the image line, place your Dockerfile in the directory where you placed the docker-compose.yaml
   # and uncomment the "build" line below, Then run `docker-compose build` to build the images.
   # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.6.3}
-  build: .
+  build:
+    dockerfile: release_dockerfile
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -72,7 +73,7 @@ services:
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
     volumes:
-      - postgres-db-volume:/var/lib/postgresql/data
+      - postgres-db-volume-release:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
@@ -173,7 +174,7 @@ services:
         }
         airflow_version=$$(AIRFLOW__LOGGING__LOGGING_LEVEL=INFO && gosu airflow airflow version)
         airflow_version_comparable=$$(ver $${airflow_version})
-        min_airflow_version=2.2.0
+        min_airflow_version=2.1.0
         min_airflow_version_comparable=$$(ver $${min_airflow_version})
         if (( airflow_version_comparable < min_airflow_version_comparable )); then
           echo
@@ -252,28 +253,28 @@ services:
       - -c
       - airflow
 
-  # You can enable flower by adding "--profile flower" option e.g. docker-compose --profile flower up
-  # or by explicitly targeted on the command line e.g. docker-compose up flower.
-  # See: https://docs.docker.com/compose/profiles/
-
-  # flower:
-  #   <<: *airflow-common
-  #   command: celery flower
-  #   profiles:
-  #     - flower
-  #   ports:
-  #     - "5555:5555"
-  #   healthcheck:
-  #     test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 30s
-  #   restart: always
-  #   depends_on:
-  #     <<: *airflow-common-depends-on
-  #     airflow-init:
-  #       condition: service_completed_successfully
+#  You can enable flower by adding "--profile flower" option e.g. docker-compose --profile flower up
+#  or by explicitly targeted on the command line e.g. docker-compose up flower.
+#  See: https://docs.docker.com/compose/profiles/
+#
+#  flower:
+#    <<: *airflow-common
+#    command: celery flower
+#    profiles:
+#      - flower
+#    ports:
+#      - "5555:5555"
+#    healthcheck:
+#      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 5
+#      start_period: 30s
+#    restart: always
+#    depends_on:
+#      <<: *airflow-common-depends-on
+#      airflow-init:
+#        condition: service_completed_successfully
 
 # =================================================================================
 # ||                               ELASTICSEARCH                                 ||
@@ -434,7 +435,7 @@ services:
  #    environment:
  #      - SERVICE_NAME=hiveserver2
  #      - SERVICE_OPTS="-Dhive.metastore.uris=thrift://metastore-standalone:9083"
- #      - IS_RESUME="true"
+ # - IS_RESUME="true"
  #    ports:
  #      - 10000:10000
  #      - 10002:10002
@@ -574,7 +575,7 @@ volumes:
   # hadoop_datanode:
   # hadoop_historyserver:
   # hive_warehouse:
-  postgres-db-volume:
+  postgres-db-volume-release:
   # scylla-1:
   # scylla-2:
   # scylla-3:

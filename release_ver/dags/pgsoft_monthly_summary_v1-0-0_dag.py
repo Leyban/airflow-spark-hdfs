@@ -6,7 +6,7 @@ from pandas import DataFrame
 
 
 @task
-def create_pgsoft_summary_table(**kwargs):
+def create_pgsoft_monthly_summary_table(**kwargs):
     import sqlite3
     import os
 
@@ -17,21 +17,22 @@ def create_pgsoft_summary_table(**kwargs):
     filepath, dir = get_filepath(ds)
 
     if not os.path.exists(dir):
-        os.remove(filepath)
+        if os.path.exists(filepath):
+            os.remove(filepath)
         os.makedirs(dir)
     
     conn = sqlite3.connect(filepath)
     curs = conn.cursor()
 
-    get_table_list = "SELECT name FROM sqlite_master WHERE type='table' AND name='pgsoft_summary'"
+    get_table_list = "SELECT name FROM sqlite_master WHERE type='table' AND name='pgsoft_monthly_summary'"
 
     res = curs.execute(get_table_list)
     tables = res.fetchall()
 
     if len( tables ) == 0:
-        print("Creating table 'pgsoft_summary'")
+        print("Creating table 'pgsoft_monthly_summary'")
         create_member_table_sql = """
-            CREATE TABLE pgsoft_summary(
+            CREATE TABLE pgsoft_monthly_summary(
                 player_name text,
                 currency text,
                 bet_amount real,
@@ -52,7 +53,7 @@ def get_filepath(ds):
     year = date.year
 
     filename = f"pgsoft_{year}{month}"
-    dir = f"./data/pgsoft_summary/{date.strftime('%Y%m')}"
+    dir = f"./data/pgsoft_monthly_summary/{date.strftime('%Y%m')}"
     filepath = f"{dir}/{filename}.db"
 
     return filepath, dir
@@ -112,7 +113,7 @@ def get_pgsoft_day(date: datetime, **kwargs):
     conn = sqlite3.connect(filepath)
 
     if os.path.exists(filepath):
-        prev_df = pd.read_sql(f"SELECT * FROM pgsoft_summary", conn)
+        prev_df = pd.read_sql(f"SELECT * FROM pgsoft_monthly_summary", conn)
         prev_df['last_bet_time'] = pd.to_datetime(prev_df['last_bet_time'])
         df = pd.concat([df, prev_df])
 
@@ -125,7 +126,7 @@ def get_pgsoft_day(date: datetime, **kwargs):
     df['last_bet_time'] = df['last_bet_time'].dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
     print(f"Inserting {df.shape[0]} to {filepath}")
-    df.to_sql("pgsoft_summary", conn, if_exists='replace')
+    df.to_sql("pgsoft_monthly_summary", conn, if_exists='replace')
 
 
 def get_num_days(**kwargs):
@@ -166,6 +167,7 @@ def summarize_month(**kwargs):
     import pandas as pd
     import numpy as np
     import sqlite3
+    import os
 
     ds = kwargs['ds']
     if 'custom_ds' in kwargs['params']:
@@ -179,11 +181,13 @@ def summarize_month(**kwargs):
 
     conn = sqlite3.connect(filepath)
 
-    df = pd.read_sql(f"SELECT * FROM pgsoft_summary", conn)
+    df = pd.read_sql(f"SELECT * FROM pgsoft_monthly_summary", conn)
     df['last_bet_time'] = pd.to_datetime(df['last_bet_time'])
 
     if df.shape[0] == 0:
         print("No Data Found")
+        print("Deleting Directory: ", filepath)
+        os.remove(filepath)
         raise AirflowSkipException
 
     df = df.groupby(['player_name', 'currency']).agg({
@@ -197,31 +201,33 @@ def summarize_month(**kwargs):
 
     # Clear any previous summary for the month
     raw_sql = f"""
-        DELETE FROM pgsoft_summary
+        DELETE FROM pgsoft_monthly_summary
         WHERE last_bet_time >= '{date_from}'
         AND last_bet_time < '{date_to}'
     """
     print("Deleting date from:", date_from, "\ndate to:", date_to)
     conn_collector_pg_hook.run(raw_sql)
 
-    df.to_sql("pgsoft_summary", engine_collector, if_exists='append', index=False)
+    df.to_sql("pgsoft_monthly_summary", engine_collector, if_exists='append', index=False)
+
+    print("Deleting File: ", filepath)
+    os.remove(filepath)
 
 
 @dag(
-    dag_id='pgsoft_summary-v1.0.0',
+    dag_id='pgsoft_monthly_summary-v1.0.0',
     description='Summarizes the player info for each month',
-    schedule="@monthly",
+    schedule_interval="@monthly",
     start_date=datetime(2022, 12, 31),
     catchup=False,
     max_active_runs=1,
-    max_active_tasks=1,
     )
 def monthly_summary():
     
-    init = create_pgsoft_summary_table()
+    init = create_pgsoft_monthly_summary_table()
     summarize_days = summarize_daily()
     summarize_final = summarize_month()
 
     init >> summarize_days >> summarize_final
 
-monthly_summary()
+_ = monthly_summary()
