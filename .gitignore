@@ -6,7 +6,7 @@ logs/
 
 /hdfs
 
-/data
+data/
 
 /metastore-postgresql
 

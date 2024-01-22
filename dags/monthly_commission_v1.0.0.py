@@ -1816,7 +1816,7 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     print(wager_df.head())
 
     prev_settlement_df = get_previous_settlement_df(prev_from_transaction_date, prev_to_transaction_date)
-    affiliate_df = get_affiliate_df()
+    affiliate_df = get_affiliate_df(payout_frequency)
 
     commission_df = transaction_df.merge(wager_df, how='left', on=['affiliate_id', 'currency']).fillna(0)
 
