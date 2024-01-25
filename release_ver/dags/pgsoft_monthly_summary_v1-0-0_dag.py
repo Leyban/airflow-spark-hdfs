@@ -17,8 +17,6 @@ def create_pgsoft_monthly_summary_table(**kwargs):
     filepath, dir = get_filepath(ds)
 
     if not os.path.exists(dir):
-        if os.path.exists(filepath):
-            os.remove(filepath)
         os.makedirs(dir)
     
     conn = sqlite3.connect(filepath)

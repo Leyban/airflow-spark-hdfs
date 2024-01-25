@@ -162,7 +162,7 @@ def init_sqlite():
     if not os.path.exists(f"{SQLITE_ADJUSTMENTS_PATH}/"):
         os.makedirs(f"{SQLITE_ADJUSTMENTS_PATH}/")
 
-    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH) # This should be in Cassandra or something
+    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH)
     curs = conn.cursor()
 
     get_table_list = "SELECT name FROM sqlite_master WHERE type='table' AND name='member'"
@@ -182,7 +182,7 @@ def init_sqlite():
         curs.execute(create_member_table_sql)
     curs.close()
 
-    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH) # This should be in Cassandra or something
+    conn = sqlite3.connect(SQLITE_MEMBERS_FILEPATH)
     curs = conn.cursor()
 
     get_table_list = "SELECT name FROM sqlite_master WHERE type='table' AND name='affiliate'"
@@ -405,7 +405,7 @@ def create_daily_wager_table(product: str, **kwargs):
                      CREATE TABLE {table_name} (
                          affiliate_id integer,
                          win_loss real, 
-                         total_members integer,
+                         login_name text,
                          currency text
                      )
                      """)
@@ -609,7 +609,7 @@ def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
 
     target_date = exec_date.replace(
-            hour=0,
+            hour=UTC_EXEC_TIME,
             minute=0,
             second=0,
             microsecond=0
@@ -1219,6 +1219,7 @@ def save_wager_to_sqlite(product, wager_df, datestamp):
 
     print(f"Saving {wager_df.shape[0]} rows to file: {filepath}")
     print(wager_df.columns)
+    print(wager_df[:10])
     conn = sqlite3.connect(filepath)
 
     wager_df.to_sql(table_name, conn, if_exists='replace', index=False)
@@ -1256,12 +1257,6 @@ def update_wager_table(product, fetch_wager_func, **kwargs):
     # Group by member
     wager_df = wager_df.groupby(['affiliate_id', 'currency', 'login_name']).sum().reset_index()
 
-    wager_df['total_members'] = 1
-
-    # Group by affiliate
-    wager_df = wager_df.drop(columns=['login_name'])
-    wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
-    
     save_wager_to_sqlite(product, wager_df, datestamp)
 
 
@@ -1297,7 +1292,12 @@ def aggregate_scheduled_wagers(product, payout_frequency, **kwargs):
         print("No Wager Data Found")
         return
 
+    # Group By login_name
     print(wager_df.columns)
+    wager_df = wager_df.groupby(['affiliate_id', 'currency', 'login_name']).sum().reset_index()
+
+    wager_df['total_members'] = 1
+    wager_df = wager_df.drop(['login_name'], axis=1)
     wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
 
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
@@ -1374,7 +1374,7 @@ def save_adjustment_to_sqlite(adjustment_df, datestamp):
 
     table_name = f"adjustment_{datestamp}"
 
-    filepath = f"{SQLITE_ADJUSTMENTS_PATH}/adjustment/{table_name}.db"
+    filepath = f"{SQLITE_ADJUSTMENTS_PATH}/{table_name}.db"
 
     print(f"Saving {adjustment_df.shape[0]} rows to file: {filepath}")
     print(adjustment_df.columns)
@@ -1544,6 +1544,7 @@ def get_aggregated_transactions(datestamp):
 
         transaction_df = pd.concat([transaction_df, df])
 
+    transaction_df['affiliate_id'] = transaction_df['affiliate_id'].astype(int)
     return transaction_df
 
 
@@ -1565,11 +1566,11 @@ def get_aggregated_wagers(datestamp):
             continue
 
         df = df.rename(columns={'win_loss': 'company_win_loss'})
-        print("df", df.columns)
-        print("df", df.head())
+        print(product, df.columns)
+        print(product, df.head())
         wager_df = pd.concat([wager_df, df])
 
-
+    wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
     return wager_df
 
 
@@ -1586,6 +1587,7 @@ def get_aggregated_adjustments(datestamp):
 
     df = df.rename(columns={'amount': 'total_adjustment'})
 
+    df['affiliate_id'] = df['affiliate_id'].astype(int)
     return df
 
 
@@ -1634,7 +1636,7 @@ def update_affiliate_table():
 
     print("Inserting ", affiliate_df.shape[0], " Affiliates to Sqlite affiliate table")
     print(affiliate_df.columns)
-    affiliate_df.to_sql(table_name, conn, if_exists='replace')
+    affiliate_df.to_sql(table_name, conn, if_exists='replace', index=False)
 
 
 def get_affiliate_df(payout_frequency):
@@ -1642,8 +1644,9 @@ def get_affiliate_df(payout_frequency):
     import pandas as pd
 
     conn = sqlite3.connect(SQLITE_AFFILIATE_ACCOUNT_FILEPATH)
-    df = pd.read_sql(f"SELECT * FROM affiliate WHERE payout_frequency = {payout_frequency}", conn)
+    df = pd.read_sql(f"SELECT * FROM affiliate WHERE payout_frequency = '{payout_frequency}'", conn)
 
+    df['affiliate_id'] = df['affiliate_id'].astype(int)
     return df
 
 
@@ -1675,6 +1678,9 @@ def convert_to_usd(commission_df: DataFrame):
 def calc_total_amount(row: Series):
     total_amount = 0
 
+    row['commission_status'] = COMMISSION_STATUS_THRESHOLD
+    row['payment_status'] = COMMISSION_PAYMENT_STATUS_THRESHOLD
+
     if row['net_company_win_loss'] < DEFAULT_COMMISSION_MAX_NET_TIER1:
         row['tier'] = 1
         total_amount = row['net_company_win_loss'] * row['commission_tier1']
@@ -1695,6 +1701,7 @@ def calc_total_amount(row: Series):
         total_amount += tier2_win_loss * row['commission_tier2']
         total_amount += tier3_win_loss * row['commission_tier3']
 
+    row['total_amount'] = total_amount
     row['grand_total'] = total_amount
 
     if row['total_members'] < row['min_active_player']:
@@ -1746,6 +1753,7 @@ def get_previous_settlement_df(from_transaction_date, to_transaction_date)->Data
 
     df = conn_affiliate_pg_hook.get_pandas_df(raw_sql)
 
+    df['affiliate_id'] = df['affiliate_id'].astype(int)
     return df
 
 
@@ -1801,6 +1809,8 @@ def get_transaction_dates(payout_frequency: str, exec_date: datetime):
     
 @task
 def calculate_affiliate_fees(payout_frequency, **kwargs):
+    import pandas as pd
+
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
 
@@ -1810,68 +1820,69 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     wager_df = get_aggregated_wagers(datestamp)
     adjustment_df = get_aggregated_adjustments(datestamp)
 
-    print("Marker 1 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    print(transaction_df.columns)
-    print(wager_df.columns)
-    print(wager_df.head())
-
     prev_settlement_df = get_previous_settlement_df(prev_from_transaction_date, prev_to_transaction_date)
     affiliate_df = get_affiliate_df(payout_frequency)
 
-    commission_df = transaction_df.merge(wager_df, how='left', on=['affiliate_id', 'currency']).fillna(0)
+    print("Marker 1 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+    print(transaction_df.columns, transaction_df.shape[0])
+    print(wager_df.columns, wager_df.shape[0])
+    print(wager_df[:10])
+
+    commission_df = pd.concat([transaction_df, wager_df]).fillna(0)
+    commission_df = commission_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
+
+    print("Marker 2 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+    print("Merged Transaction and Wager Data")
+    print(commission_df.columns, commission_df.shape[0])
+    print(commission_df[:10])
 
     # Convert Currency to USD
     commission_df['usd_rate'] = commission_df.apply(lambda x: get_usd_rate(x), axis=1)
-
-    print("Marker 2 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    print(commission_df.columns)
-    print(commission_df.head())
-
     commission_df = convert_to_usd(commission_df)
 
-    # Todo: Fix Currency Merging
     # Everything should be USD from here on
 
     print("Marker 3 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    print(commission_df.columns)
-    print(commission_df.head())
+    print("Converted to USD")
+    print(commission_df.columns, commission_df.shape[0])
+    print(commission_df[:10])
 
-    commission_df = commission_df.merge(adjustment_df, how='left', on=['affiliate_id', 'currency'])
-    commission_df = commission_df.merge(prev_settlement_df, how='left', on=['affiliate_id', 'currency'])
+    commission_df = pd.concat([commission_df, adjustment_df, prev_settlement_df]).fillna(0)
+    commission_df = commission_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
+
     commission_df = commission_df.merge(affiliate_df, how='inner', on=['affiliate_id'])
 
     commission_df = commission_df.fillna(0)
 
     print("Marker 4 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    print(commission_df.columns)
-    print(commission_df.head())
+    print("Merged Adjustment, Previous Settlement, and Affiliate Data")
+    print(commission_df.columns, commission_df.shape[0])
+    print(commission_df[:10])
 
     commission_df = commission_df.apply(lambda x: calc_net_company_win_loss(x), axis=1)
     commission_df = commission_df.apply(lambda x: calc_total_amount(x), axis=1)
 
     print("Marker 5 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    print(commission_df.columns)
-    print(commission_df.head())
-
-    commission_df['total_affiliate_fee'] = commission_df['total_adjustment'] - commission_df['net_company_win_loss'] - commission_df['expenses'] - commission_df['other_fee']
+    print("Calculated Net Company Win Loss and Grand Total")
+    print(commission_df.columns, commission_df.shape[0])
+    print(commission_df[:10])
 
     commission_df['from_transaction_date'] = from_transaction_date
     commission_df['to_transaction_date'] = to_transaction_date
 
+    commission_df = commission_df.drop(columns=['commission_tier1', 'commission_tier2', 'commission_tier3', 'min_active_player'])
+
     print("Marker 6 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    print(commission_df.columns)
-    print(commission_df.head())
+    print("Completed Commission Data")
+    print(commission_df.columns, commission_df.shape[0])
+    print(commission_df[:10])
 
-    # conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
-    # engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
-
-    # Todo: Add Currency Conversion to USD
-    # Todo: Add Missing Table Columns
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
 
     print("Inserting ", commission_df.shape[0], f" Commission Data to Postgres {COMMISSION_TABLE} Table")
-    print(commission_df.columns)
 
-    # commission_df.to_sql(AFFILIATE_TABLE, engine_affiliate, if_exists='append', index=False)
+    commission_df.to_sql(COMMISSION_TABLE, engine_affiliate, if_exists='append', index=False)
 
 
 @dag(

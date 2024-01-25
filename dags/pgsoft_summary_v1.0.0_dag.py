@@ -214,6 +214,7 @@ def summarize_month(**kwargs):
     start_date=datetime(2022, 12, 31),
     catchup=False,
     max_active_runs=1,
+    max_active_tasks=1,
     )
 def monthly_summary():
     
