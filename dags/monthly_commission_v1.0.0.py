@@ -1,4 +1,8 @@
-# Todo: Implement Idempotency
+# Todo: Implement idempotency
+# Todo: Rollover Next Month not working properly
+# Todo: Previous Settlement Seems Incorrect
+# Todo: Currency Other than USD is mixed in 
+
 
 from airflow.decorators import dag, task_group, task
 from airflow.operators.python import PythonOperator
@@ -649,8 +653,6 @@ def get_allbet_wager(date_from, date_to) -> DataFrame:
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
-    df['product'] = PRODUCT_CODE_ALLBET
-
     df = get_member_currency(df)
 
     return df 
@@ -998,8 +1000,6 @@ def get_saba_number(date_from, date_to) -> DataFrame:
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
 
     df = df.rename(columns={'winlost_amount': 'win_loss'})
-
-    df['product'] = PRODUCT_CODE_SABANUMBERGAME
 
     df = get_member_currency(df)
 
@@ -1394,7 +1394,7 @@ def get_affiliate_adjustment_data(date_from, date_to):
             currency
         FROM adjustment
         WHERE created_at >= '{date_from}'
-        AND created_at <= '{date_to}'
+        AND created_at < '{date_to}'
         AND status = {ADJUSTMENT_STATUS_SUCCESSFUL}
         AND type = {ADJUSTMENT_TYPE_COMMISSION}
         """
@@ -1424,7 +1424,7 @@ def update_adjustment_table(**kwargs):
         print(f"No adjustments found")
         raise AirflowSkipException
 
-    adjustment_df = adjustment_df.groupby(['affiliate_id', 'currency']).sum().reset_index(drop=True)
+    adjustment_df = adjustment_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
 
     datestamp = date_from.strftime("%Y%m%d")
     save_adjustment_to_sqlite(adjustment_df, datestamp)
@@ -1435,13 +1435,13 @@ def aggregate_scheduled_adjustments(payout_frequency: str, **kwargs):
     import sqlite3
     import pandas as pd
 
-    monthly_transactions = pd.DataFrame()
+    aggregated_adjustments = pd.DataFrame()
 
     datestamps = get_datestamps(payout_frequency, **kwargs)
 
     for datestamp in datestamps:
         table_name = f"adjustment_{datestamp}"
-        filepath = f"{SQLITE_TRANSACTIONS_PATH}/{table_name}.db"
+        filepath = f"{SQLITE_ADJUSTMENTS_PATH}/{table_name}.db"
 
         conn = sqlite3.connect(filepath)
         curs = conn.cursor()
@@ -1452,20 +1452,25 @@ def aggregate_scheduled_adjustments(payout_frequency: str, **kwargs):
         tables = res.fetchall()
 
         if len( tables ) != 0:
-            transaction_df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
-            print(f"{transaction_df.shape[0]} Affiliates Updated on {datestamp}")
+            adjustment_df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
+            print(f"{adjustment_df.shape[0]} Affiliates Updated on {datestamp}")
 
-            monthly_transactions = pd.concat([monthly_transactions, transaction_df])
+            if not adjustment_df.empty:
+                aggregated_adjustments = pd.concat([aggregated_adjustments, adjustment_df])
 
-    if monthly_transactions.shape[0] == 0:
+    if aggregated_adjustments.shape[0] == 0:
         print("No Adjustment Data Found")
         return
-
-    monthly_transactions = monthly_transactions.groupby(['affiliate_id', 'currency']).sum().reset_index(drop=True)
+    
+    print(aggregated_adjustments.shape[0])
+    print(aggregated_adjustments[:10])
+    aggregated_adjustments = aggregated_adjustments.groupby(['affiliate_id', 'currency']).sum().reset_index()
+    print(aggregated_adjustments.shape[0])
+    print(aggregated_adjustments[:10])
 
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
 
-    save_adjustment_to_sqlite(monthly_transactions, datestamp)
+    save_adjustment_to_sqlite(aggregated_adjustments, datestamp)
 
 
 @task
@@ -1545,6 +1550,13 @@ def get_aggregated_transactions(datestamp):
         transaction_df = pd.concat([transaction_df, df])
 
     transaction_df['affiliate_id'] = transaction_df['affiliate_id'].astype(int)
+
+    # List of columns to exclude from conversion to float
+    exclude_columns = ['affiliate_id', 'currency']
+
+    # Convert all columns (except the excluded ones) to float
+    transaction_df.loc[:, transaction_df.columns.difference(exclude_columns)] = transaction_df.loc[:, transaction_df.columns.difference(exclude_columns)].astype(float)
+
     return transaction_df
 
 
@@ -1571,6 +1583,14 @@ def get_aggregated_wagers(datestamp):
         wager_df = pd.concat([wager_df, df])
 
     wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
+
+    # List of columns to exclude from conversion to float
+    exclude_columns = ['affiliate_id', 'currency']
+
+    # Convert all columns (except the excluded ones) to float
+    wager_df.loc[:, wager_df.columns.difference(exclude_columns)] = wager_df.loc[:, wager_df.columns.difference(exclude_columns)].astype(float)
+
+    wager_df['company_win_loss'] = -wager_df['company_win_loss'] # Negate Win Loss
     return wager_df
 
 
@@ -1594,6 +1614,7 @@ def get_aggregated_adjustments(datestamp):
 @task(trigger_rule=TriggerRule.ALL_DONE)
 def check_schedule(payout_frequency:str, **kwargs):
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
+    print("Checking Schedule: ", kwargs['ds'])
 
     if payout_frequency == PAYOUT_FREQUENCY_WEEKLY:
         if exec_date.weekday() != WEEKLY_DAY:
@@ -1705,10 +1726,10 @@ def calc_total_amount(row: Series):
     row['grand_total'] = total_amount
 
     if row['total_members'] < row['min_active_player']:
-        row['rollover_next_month'] = row.previous_settlement
+        row['rollover_next_month'] = row['previous_settlement']
 
     else:
-        row['grand_total'] = row['grand_total'] + row.previous_settlement
+        row['grand_total'] = row['grand_total'] + row['previous_settlement']
 
         if row['grand_total'] < DEFAULT_COMMISSION_MIN_NET:
             row['rollover_next_month'] = row['grand_total']
@@ -1748,7 +1769,7 @@ def get_previous_settlement_df(from_transaction_date, to_transaction_date)->Data
         WHERE commission_status = {COMMISSION_STATUS_THRESHOLD}
         AND from_transaction_date = '{from_transaction_date}'
         AND to_transaction_date = '{to_transaction_date}'
-        AND (cm.total_members_stake >= aa.min_active_player or (aa.min_active_player IS NULL AND cm.total_members_stake >= {DEFAULT_MIN_ACTIVE_PLAYER}))
+        AND (cm.total_members >= aa.min_active_player or (aa.min_active_player IS NULL AND cm.total_members >= {DEFAULT_MIN_ACTIVE_PLAYER}))
     """
 
     df = conn_affiliate_pg_hook.get_pandas_df(raw_sql)
