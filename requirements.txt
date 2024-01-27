@@ -4,6 +4,7 @@
 # PyHive
 hdfs
 pyspark
+apache-airflow-providers-postgres
 apache-airflow-providers-apache-spark
 apache-airflow-providers-apache-hive
 apache-airflow-providers-apache-cassandra

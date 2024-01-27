@@ -1,9 +1,3 @@
-# Todo: Implement idempotency
-# Todo: Rollover Next Month not working properly
-# Todo: Previous Settlement Seems Incorrect
-# Todo: Currency Other than USD is mixed in 
-
-
 from airflow.decorators import dag, task_group, task
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -1747,7 +1741,7 @@ def calc_net_company_win_loss(row: Series):
 
     temp_platform_fee = 0
     if row['platform_fee'] > 0:
-        temp_platform_fee =row['platform_fee'] 
+        temp_platform_fee = row['platform_fee'] 
 
     fee_total = row.expenses + row.other_fee + temp_platform_fee
 
@@ -1844,7 +1838,6 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     prev_settlement_df = get_previous_settlement_df(prev_from_transaction_date, prev_to_transaction_date)
     affiliate_df = get_affiliate_df(payout_frequency)
 
-    print("Marker 1 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     print(transaction_df.columns, transaction_df.shape[0])
     print(wager_df.columns, wager_df.shape[0])
     print(wager_df[:10])
@@ -1852,7 +1845,6 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     commission_df = pd.concat([transaction_df, wager_df]).fillna(0)
     commission_df = commission_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
 
-    print("Marker 2 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     print("Merged Transaction and Wager Data")
     print(commission_df.columns, commission_df.shape[0])
     print(commission_df[:10])
@@ -1863,7 +1855,6 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
 
     # Everything should be USD from here on
 
-    print("Marker 3 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     print("Converted to USD")
     print(commission_df.columns, commission_df.shape[0])
     print(commission_df[:10])
@@ -1875,7 +1866,6 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
 
     commission_df = commission_df.fillna(0)
 
-    print("Marker 4 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     print("Merged Adjustment, Previous Settlement, and Affiliate Data")
     print(commission_df.columns, commission_df.shape[0])
     print(commission_df[:10])
@@ -1883,23 +1873,27 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     commission_df = commission_df.apply(lambda x: calc_net_company_win_loss(x), axis=1)
     commission_df = commission_df.apply(lambda x: calc_total_amount(x), axis=1)
 
-    print("Marker 5 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     print("Calculated Net Company Win Loss and Grand Total")
     print(commission_df.columns, commission_df.shape[0])
     print(commission_df[:10])
 
     commission_df['from_transaction_date'] = from_transaction_date
     commission_df['to_transaction_date'] = to_transaction_date
+    commission_df['created_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    commission_df['updated_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     commission_df = commission_df.drop(columns=['commission_tier1', 'commission_tier2', 'commission_tier3', 'min_active_player'])
 
-    print("Marker 6 - @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     print("Completed Commission Data")
     print(commission_df.columns, commission_df.shape[0])
     print(commission_df[:10])
 
     conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
     engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+
+    # Removing Previous Data From Previous Run
+    delete_sql = f"""DELETE FROM {COMMISSION_TABLE} WHERE from_transaction_date = '{from_transaction_date}' AND to_transaction_date = '{to_transaction_date}'"""
+    conn_affiliate_pg_hook.run(delete_sql)
 
     print("Inserting ", commission_df.shape[0], f" Commission Data to Postgres {COMMISSION_TABLE} Table")
 
@@ -1909,7 +1903,7 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
 @dag(
     dag_id='monthly_commission-v1.0.0_testzone',
     description='Calculates commission for affiliates every month',
-    schedule="@daily",
+    schedule="0 16 * * *",
     start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1,
