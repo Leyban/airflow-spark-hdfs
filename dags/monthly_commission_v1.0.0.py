@@ -6,29 +6,11 @@ from airflow.utils.trigger_rule import TriggerRule
 from datetime import  datetime,timedelta
 from pandas import DataFrame, Series
 
-
 # Constants
-DEFAULT_PLATFORM_FEE = 2
-COMMISSION_STATUS_THRESHOLD = 2
-COMMISSION_PAYMENT_STATUS_THRESHOLD = 2
-
-DEFAULT_COMMISSION_MAX_NET_TIER1 = 10000
-DEFAULT_COMMISSION_MAX_NET_TIER2 = 100000
-
-DEFAULT_MIN_ACTIVE_PLAYER = 5
-DEFAULT_COMMISSION_MIN_NET = 100
-
-COMMISSION_STATUS_PROCESSING = 1
-COMMISSION_PAYMENT_STATUS_PROCESSING = 1
-
 CURRENCY_VND = "VND"
 CURRENCY_THB = "THB"
 CURRENCY_RMB = "RMB"
 CURRENCY_USD = "USD"
-
-DEFAULT_COMMISSION_VND_USD_RATE = 0.041
-DEFAULT_COMMISSION_THB_USD_RATE = 0.028
-DEFAULT_COMMISSION_RMB_USD_RATE = 0.14
 
 # Payout Frequency
 PAYOUT_FREQUENCY_WEEKLY = 'weekly'
@@ -36,7 +18,7 @@ PAYOUT_FREQUENCY_BI_MONTHLY = 'bi_monthly'
 PAYOUT_FREQUENCY_MONTHLY = 'monthly'
 
 # Payout Frequency Calculation Day
-WEEKLY_DAY = 3          # Day of the Week; 0 = Monday, 6 = Sunday
+WEEKLY_DAY = 0          # Day of the Week; 0 = Monday, 6 = Sunday
 BI_MONTHLY_DAY = 15     # Day of Month
 MONTHLY_DAY = 1         # First Day of Month
 
@@ -53,6 +35,13 @@ ADJUSTMENT_TYPE_COMMISSION = 1
 ADJUSTMENT_STATUS_SUCCESSFUL = 2
 WITHDRAWAL_STATUS_SUCCESSFUL = 6
 DEPOSIT_STATUS_SUCCESSFUL = 2
+
+# Commission status and payment status
+COMMISSION_STATUS_PROCESSING = 1
+COMMISSION_STATUS_THRESHOLD = 2
+
+COMMISSION_PAYMENT_STATUS_PROCESSING = 1
+COMMISSION_PAYMENT_STATUS_THRESHOLD = 2
 
 # Table Names
 AFFILIATE_TABLE = "affiliate"
@@ -83,7 +72,6 @@ WEWORLD_TABLE = "weworld_wager"
 SQLITE_TRANSACTIONS_PATH = "./data/monthly_commission/transactions"
 SQLITE_WAGERS_PATH = "./data/monthly_commission/wagers"
 SQLITE_ADJUSTMENTS_PATH = "./data/monthly_commission/adjustments"
-SQLITE_COMMISSION_PATH = "./data/monthly_commission/commission"
 SQLITE_MEMBERS_FILEPATH = "./data/member.db"
 SQLITE_AFFILIATE_ACCOUNT_FILEPATH = "./data/affiliate.db"
 
@@ -518,8 +506,6 @@ def drop_prev_transaction_table(transaction_type: str, **kwargs):
 
 
 def get_withdrawal_data(date_from, date_to):
-    import pandas as pd
-
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
 
     raw_sql = f"""
@@ -538,9 +524,11 @@ def get_withdrawal_data(date_from, date_to):
         AND w.status = {WITHDRAWAL_STATUS_SUCCESSFUL}
     """
 
-    df: DataFrame = conn_payment_pg_hook.get_pandas_df(raw_sql)
+    df = conn_payment_pg_hook.get_pandas_df(raw_sql)
 
-    df = df[pd.to_numeric(df['affiliate_fee']).fillna(0) > 0]
+    df[['affiliate_fee']] = df[['affiliate_fee']].fillna(0)
+    df['affiliate_fee'] = df['affiliate_fee'].astype(float)
+    df = df[df['affiliate_fee'] > 0]
 
     return df
 
@@ -568,7 +556,9 @@ def get_deposit_data(date_from, date_to):
 
     df = conn_payment_pg_hook.get_pandas_df(raw_sql)
 
-    df = df[pd.to_numeric(df['affiliate_fee']).fillna(0) > 0]
+    df[['affiliate_fee']] = df[['affiliate_fee']].fillna(0)
+    df['affiliate_fee'] = df['affiliate_fee'].astype(float)
+    df = df[df['affiliate_fee'] > 0]
 
     return df
 
@@ -1467,61 +1457,6 @@ def aggregate_scheduled_adjustments(payout_frequency: str, **kwargs):
     save_adjustment_to_sqlite(aggregated_adjustments, datestamp)
 
 
-@task
-def create_commission_table(**kwargs):
-    import sqlite3
-
-    datestamp = kwargs['ds_nodash']
-    table_name = f"affiliate_{datestamp}"
-    filepath = f"{SQLITE_COMMISSION_PATH}/{table_name}.db"
-
-    conn = sqlite3.connect(filepath)
-
-    print(f"Creating file: {filepath}")
-    conn = sqlite3.connect(filepath)
-    curs = conn.cursor()
-
-    get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
-
-    res = curs.execute(get_table_list)
-    tables = res.fetchall()
-
-    if len( tables ) == 0:
-        curs.execute(f"""
-                     CREATE TABLE {table_name} (
-                         affiliate_id integer,
-                         login_name text,
-                         amount real,
-                         currency text
-                     )
-                     """)
-        conn.commit()
-
-    conn.close()
-
-
-def save_affiliate_fees(affiliate_df: DataFrame, **kwargs):
-    import sqlite3
-
-    datestamp = kwargs['ds_nodash']
-    table_name = f"affiliate_{datestamp}"
-    filepath = f"{SQLITE_COMMISSION_PATH}/{table_name}.db"
-
-    print(f"Connecting to: {filepath}")
-    conn = sqlite3.connect(filepath)
-    curs = conn.cursor()
-
-    get_table_list = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
-
-    res = curs.execute(get_table_list)
-    tables = res.fetchall()
-
-    if len( tables ) != 0:
-        print(f"Saving {affiliate_df.shape[0]} affiliates")
-        print(affiliate_df.columns)
-        affiliate_df.to_sql(table_name, conn, if_exists='replace')
-
-
 def get_aggregated_transactions(datestamp):
     import sqlite3
     import pandas as pd
@@ -1629,6 +1564,12 @@ def check_schedule(payout_frequency:str, **kwargs):
 @task
 def update_affiliate_table():
     import sqlite3
+    from airflow.models import Variable
+
+    DEFAULT_COMMISSION_TIER1 = Variable.get("DEFAULT_COMMISSION_TIER1", 28)
+    DEFAULT_COMMISSION_TIER2 = Variable.get("DEFAULT_COMMISSION_TIER2", 38)
+    DEFAULT_COMMISSION_TIER3 = Variable.get("DEFAULT_COMMISSION_TIER3", 48)
+    DEFAULT_MIN_ACTIVE_PLAYER = Variable.get("DEFAULT_MIN_ACTIVE_PLAYER", 5)
 
     conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
 
@@ -1644,13 +1585,19 @@ def update_affiliate_table():
         FROM affiliate_account
     """
 
-    affiliate_df = conn_affiliate_pg_hook.get_pandas_df(raw_sql)
+    affiliate_df: DataFrame = conn_affiliate_pg_hook.get_pandas_df(raw_sql)
 
     table_name = "affiliate"
     conn = sqlite3.connect(SQLITE_AFFILIATE_ACCOUNT_FILEPATH)
 
     print("Inserting ", affiliate_df.shape[0], " Affiliates to Sqlite affiliate table")
     print(affiliate_df.columns)
+
+    affiliate_df[['commission_tier1']] = affiliate_df[['commission_tier1']].fillna(value=DEFAULT_COMMISSION_TIER1)
+    affiliate_df[['commission_tier2']] = affiliate_df[['commission_tier2']].fillna(value=DEFAULT_COMMISSION_TIER2)
+    affiliate_df[['commission_tier3']] = affiliate_df[['commission_tier3']].fillna(value=DEFAULT_COMMISSION_TIER3)
+    affiliate_df[['min_active_player']] = affiliate_df[['min_active_player']].fillna(value=DEFAULT_MIN_ACTIVE_PLAYER)
+
     affiliate_df.to_sql(table_name, conn, if_exists='replace', index=False)
 
 
@@ -1667,6 +1614,10 @@ def get_affiliate_df(payout_frequency):
 
 def get_usd_rate(row: Series):
     from airflow.models import Variable
+
+    DEFAULT_COMMISSION_VND_USD_RATE = 0.041
+    DEFAULT_COMMISSION_THB_USD_RATE = 0.028
+    DEFAULT_COMMISSION_RMB_USD_RATE = 0.14
 
     if row['currency'] == CURRENCY_VND:
         return Variable.get("COMMISSION_VND_USD_RATE", DEFAULT_COMMISSION_VND_USD_RATE)
@@ -1691,28 +1642,34 @@ def convert_to_usd(commission_df: DataFrame):
 
 
 def calc_total_amount(row: Series):
+    from airflow.models import Variable
+
+    COMMISSION_MAX_NET_TIER1 = Variable.get("COMMISSION_MAX_NET_TIER1", 10_000)
+    COMMISSION_MAX_NET_TIER2 = Variable.get("COMMISSION_MAX_NET_TIER2", 100_000)
+    COMMISSION_MIN_NET = Variable.get("COMMISSION_MIN_NET", 100)
+
     total_amount = 0
 
     row['commission_status'] = COMMISSION_STATUS_THRESHOLD
     row['payment_status'] = COMMISSION_PAYMENT_STATUS_THRESHOLD
 
-    if row['net_company_win_loss'] < DEFAULT_COMMISSION_MAX_NET_TIER1:
+    if row['net_company_win_loss'] < COMMISSION_MAX_NET_TIER1:
         row['tier'] = 1
         total_amount = row['net_company_win_loss'] * row['commission_tier1']
 
-    elif row['net_company_win_loss'] < DEFAULT_COMMISSION_MAX_NET_TIER2:
+    elif row['net_company_win_loss'] < COMMISSION_MAX_NET_TIER2:
         row['tier'] = 2
-        tier2_win_loss = row['net_company_win_loss'] - DEFAULT_COMMISSION_MAX_NET_TIER1
+        tier2_win_loss = row['net_company_win_loss'] - COMMISSION_MAX_NET_TIER1 
 
-        total_amount = DEFAULT_COMMISSION_MAX_NET_TIER1 * row['commission_tier1']
+        total_amount = COMMISSION_MAX_NET_TIER1 * row['commission_tier1']
         total_amount += tier2_win_loss * row['commission_tier2']
 
     else:
         row['tier'] = 3
-        tier2_win_loss = DEFAULT_COMMISSION_MAX_NET_TIER2 - DEFAULT_COMMISSION_MAX_NET_TIER1
-        tier3_win_loss = row['net_company_win_loss'] - DEFAULT_COMMISSION_MAX_NET_TIER1 - DEFAULT_COMMISSION_MAX_NET_TIER2
+        tier2_win_loss = COMMISSION_MAX_NET_TIER2 - COMMISSION_MAX_NET_TIER1 
+        tier3_win_loss = row['net_company_win_loss'] - COMMISSION_MAX_NET_TIER1 - COMMISSION_MAX_NET_TIER2 
 
-        total_amount = DEFAULT_COMMISSION_MAX_NET_TIER1 * row['commission_tier1']
+        total_amount = COMMISSION_MAX_NET_TIER1 * row['commission_tier1']
         total_amount += tier2_win_loss * row['commission_tier2']
         total_amount += tier3_win_loss * row['commission_tier3']
 
@@ -1725,7 +1682,7 @@ def calc_total_amount(row: Series):
     else:
         row['grand_total'] = row['grand_total'] + row['previous_settlement']
 
-        if row['grand_total'] < DEFAULT_COMMISSION_MIN_NET:
+        if row['grand_total'] < COMMISSION_MIN_NET:
             row['rollover_next_month'] = row['grand_total']
 
         else:
@@ -1737,7 +1694,11 @@ def calc_total_amount(row: Series):
 
 
 def calc_net_company_win_loss(row: Series):
-    row['platform_fee'] = row.company_win_loss * DEFAULT_PLATFORM_FEE * 0.01
+    from airflow.models import Variable
+
+    commission_platform_fee = Variable.get("COMMISSION_PLATFORM_FEE", 2)
+
+    row['platform_fee'] = row.company_win_loss * commission_platform_fee * 0.01
 
     temp_platform_fee = 0
     if row['platform_fee'] > 0:
@@ -1751,7 +1712,10 @@ def calc_net_company_win_loss(row: Series):
 
 
 def get_previous_settlement_df(from_transaction_date, to_transaction_date)->DataFrame:
+    from airflow.models import Variable
     conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    DEFAULT_MIN_ACTIVE_PLAYER = Variable.get("DEFAULT_MIN_ACTIVE_PLAYER", 5)
 
     raw_sql = f"""
         SELECT
@@ -1900,6 +1864,40 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     commission_df.to_sql(COMMISSION_TABLE, engine_affiliate, if_exists='append', index=False)
 
 
+@task
+def delete_old_files(**kwargs):
+    from dateutil.relativedelta import relativedelta
+    from glob import glob
+    import os
+
+    exec_date = datetime.strptime(kwargs['ds'], "%Y%m%d")
+
+    if exec_date.day != 1 :
+        print("Not yet cleanup day!")
+        raise AirflowSkipException
+
+
+    exec_date = datetime.strptime(kwargs['ds'], "%Y%m%d")
+
+    target_month = exec_date - relativedelta(months=3)
+    
+    date_iter = target_month
+    month = target_month.month
+    year = target_month.year
+
+    abs_path = os.path.abspath("./data/monthly_commission")
+    
+    while date_iter.month == month and date_iter.year == year:
+        datestamp = date_iter.strftime("%Y%m%d")
+
+        filepaths = glob(abs_path + f"/**/*{datestamp}.db")
+        for filepath in filepaths:
+            print("Removing File: ", filepath)
+            os.remove(filepath)
+
+        date_iter += timedelta(days=1)
+
+
 @dag(
     dag_id='monthly_commission-v1.0.0_testzone',
     description='Calculates commission for affiliates every month',
@@ -1992,10 +1990,10 @@ def monthly_commission():
             @task_group(group_id=product)
             def aggregate_wagers_task_group():
 
-                create_monthly_table = create_scheduled_wager_table(product, payout_frequency)
+                create_scheduled_table = create_scheduled_wager_table(product, payout_frequency)
                 aggregate_wagers_task = aggregate_scheduled_wagers(product, payout_frequency)
 
-                create_monthly_table >> aggregate_wagers_task
+                create_scheduled_table >> aggregate_wagers_task
 
             return aggregate_wagers_task_group
 
@@ -2060,7 +2058,7 @@ def monthly_commission():
 
             schedule_checker >> aggregate_task_group >> get_affiliates >> calculation_task
             schedule_checker >> get_affiliates
-            schedule_checker >> calculation_task
+            schedule_checker >> calculation_task >> delete_old_files()
 
         return scheduled_calculation
 
