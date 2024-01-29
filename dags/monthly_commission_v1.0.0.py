@@ -22,11 +22,6 @@ WEEKLY_DAY = 0          # Day of the Week; 0 = Monday, 6 = Sunday
 BI_MONTHLY_DAY = 15     # Day of Month
 MONTHLY_DAY = 1         # First Day of Month
 
-# Commmission Fee Type
-COMMISSION_FEE_TYPE_DP = 1
-COMMISSION_FEE_TYPE_WD = 2
-COMMISSION_FEE_TYPE_ADJ = 3
-
 # Adjustment Transaction Type
 ADJUSTMENT_TRANSACTION_TYPE_CREDIT = 3
 ADJUSTMENT_TYPE_COMMISSION = 1
@@ -1870,27 +1865,26 @@ def delete_old_files(**kwargs):
     from glob import glob
     import os
 
-    exec_date = datetime.strptime(kwargs['ds'], "%Y%m%d")
+    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
 
     if exec_date.day != 1 :
         print("Not yet cleanup day!")
         raise AirflowSkipException
 
-
-    exec_date = datetime.strptime(kwargs['ds'], "%Y%m%d")
-
+    abs_path = os.path.abspath("./data/monthly_commission")
     target_month = exec_date - relativedelta(months=3)
-    
-    date_iter = target_month
     month = target_month.month
     year = target_month.year
-
-    abs_path = os.path.abspath("./data/monthly_commission")
     
+    date_iter = target_month
     while date_iter.month == month and date_iter.year == year:
         datestamp = date_iter.strftime("%Y%m%d")
 
-        filepaths = glob(abs_path + f"/**/*{datestamp}.db")
+        filepaths = glob(abs_path + f"/**/*{datestamp}.db", recursive=True)
+        print(f"Checking {datestamp}")
+        if len(filepaths) > 0:
+            print(f"Deleting {len(filepaths)} files")
+
         for filepath in filepaths:
             print("Removing File: ", filepath)
             os.remove(filepath)
@@ -1905,7 +1899,7 @@ def delete_old_files(**kwargs):
     start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1,
-    max_active_tasks=5,
+    max_active_tasks=10,
     )
 def monthly_commission():
     init_sqlite_task = PythonOperator(
@@ -2058,7 +2052,10 @@ def monthly_commission():
 
             schedule_checker >> aggregate_task_group >> get_affiliates >> calculation_task
             schedule_checker >> get_affiliates
-            schedule_checker >> calculation_task >> delete_old_files()
+            schedule_checker >> calculation_task
+
+            if payout_frequency == PAYOUT_FREQUENCY_MONTHLY:
+                calculation_task >> delete_old_files()
 
         return scheduled_calculation
 
