@@ -529,8 +529,6 @@ def get_withdrawal_data(date_from, date_to):
 
 
 def get_deposit_data(date_from, date_to):
-    import pandas as pd
-
     conn_payment_pg_hook = PostgresHook(postgres_conn_id='payment_conn_id')
 
     raw_sql = f"""
@@ -1893,13 +1891,13 @@ def delete_old_files(**kwargs):
 
 
 @dag(
-    dag_id='monthly_commission-v1.0.0_testzone',
+    dag_id='monthly_commission-v1.0.0',
     description='Calculates commission for affiliates every month',
     schedule="0 16 * * *",
     start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1,
-    max_active_tasks=10,
+    max_active_tasks=3,
     )
 def monthly_commission():
     init_sqlite_task = PythonOperator(
