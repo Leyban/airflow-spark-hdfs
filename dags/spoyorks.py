@@ -29,7 +29,7 @@ dag_spark = DAG(
 
 test = SparkSubmitOperator(
     task_id='sporkitest',
-    application ='/opt/spork/test.py' ,
+    application ='/opt/app/test.py' ,
     conn_id= 'spark_conn_id',
     verbose=True,
     dag=dag_spark

@@ -2,14 +2,17 @@ FROM apache/airflow:2.7.3
 USER root
 
 # Install OpenJDK-11
-RUN apt update && \
-    apt-get -y install libpq-dev gcc && \
-    apt-get install -y procps && \
-    apt-get install -y build-essential && \
-    apt-get install -y libsasl2-dev && \
-    apt-get install -y openjdk-11-jdk && \
-    apt-get install -y ant && \
-    apt-get clean;
+RUN apt update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        openjdk-11-jdk \
+        libsasl2-dev \
+        heimdal-dev \
+        libpq-dev \
+        procps \
+        gcc \
+        ant \
+    && apt-get clean;
 
 # Set JAVA_HOME
 ENV JAVA_HOME /usr/lib/jvm/java-11-openjdk-amd64/

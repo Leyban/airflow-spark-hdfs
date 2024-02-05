@@ -34,6 +34,7 @@ DEPOSIT_STATUS_SUCCESSFUL = 2
 # Commission status and payment status
 COMMISSION_STATUS_PROCESSING = 1
 COMMISSION_STATUS_THRESHOLD = 2
+COMMISSION_STATUS_APPROVED = 4
 
 COMMISSION_PAYMENT_STATUS_PROCESSING = 1
 COMMISSION_PAYMENT_STATUS_THRESHOLD = 2
@@ -41,6 +42,9 @@ COMMISSION_PAYMENT_STATUS_THRESHOLD = 2
 # Table Names
 AFFILIATE_TABLE = "affiliate"
 COMMISSION_TABLE = "cm_commission"
+COMMISSION_FEE_TABLE = "cm_commission_fee"
+COMMISSION_MEMBER_WAGER_PRODUCT_TABLE = "cm_member_wager_product"
+COMMISSION_SUMMARY_TABLE = "cm_commission_summary"
 
 ADJUSTMENT_TABLE = "adjustment"
 
@@ -67,8 +71,8 @@ WEWORLD_TABLE = "weworld_wager"
 SQLITE_TRANSACTIONS_PATH = "./data/monthly_commission/transactions"
 SQLITE_WAGERS_PATH = "./data/monthly_commission/wagers"
 SQLITE_ADJUSTMENTS_PATH = "./data/monthly_commission/adjustments"
-SQLITE_MEMBERS_FILEPATH = "./data/member.db"
-SQLITE_AFFILIATE_ACCOUNT_FILEPATH = "./data/affiliate.db"
+SQLITE_MEMBERS_FILEPATH = "./data/monthly_commission/member.db"
+SQLITE_AFFILIATE_ACCOUNT_FILEPATH = "./data/monthly_commission/affiliate.db"
 
 # Product Codes
 PRODUCT_CODE_ALLBET = "allbet"
@@ -123,6 +127,10 @@ TRANSACTION_TYPES = [
         TRANSACTION_TYPE_WITHDRAWAL,
         TRANSACTION_TYPE_ADJUSTMENT,
         ]
+
+COMMISSION_FEE_TYPE_DEPOSIT = 1
+COMMISSION_FEE_TYPE_WITHDRAWAL = 2
+COMMISSION_FEE_TYPE_ADJUSTMENT = 3
 
 UTC_EXEC_TIME = 16
 
@@ -189,6 +197,9 @@ def init_sqlite():
 
 # Todo: I think this can be refactored better -- What a mess
 def get_member_currency(wager_df) -> DataFrame:
+    """ Takes member currency from member sqlite file. 
+        If it can't find it there, it fetches it from pg: identityDB"""
+
     import pandas as pd
 
     if wager_df.shape[0] == 0:
@@ -198,7 +209,6 @@ def get_member_currency(wager_df) -> DataFrame:
 
     if member_df.shape[0] != 0:
         wager_df = wager_df.merge(member_df, 'left', 'login_name')
-        wager_df = wager_df.drop(columns=['member_id'])
  
     # Get Missing Members
     missing_member_df = pd.DataFrame()
@@ -223,8 +233,6 @@ def get_member_currency(wager_df) -> DataFrame:
         wager_df = wager_df.merge(new_member_df, 'left', 'login_name')
 
     wager_df = wager_df.dropna(subset=['currency']) # Drop Members Not found
-    if 'member_id' in wager_df:
-        wager_df = wager_df.drop(columns=['member_id'])
 
     wager_df = wager_df.reset_index(drop=True)
 
@@ -352,8 +360,11 @@ def create_scheduled_wager_table(product: str, payout_frequency: str, **kwargs):
         curs.execute(f"""
                      CREATE TABLE {table_name} (
                          affiliate_id integer,
+                         member_id integer,
+                         member_name text,
+                         total_stake real,
+                         total_count integer,
                          win_loss real, 
-                         total_members integer,
                          currency text
                      )
                      """)
@@ -385,8 +396,11 @@ def create_daily_wager_table(product: str, **kwargs):
         curs.execute(f"""
                      CREATE TABLE {table_name} (
                          affiliate_id integer,
-                         win_loss real, 
-                         login_name text,
+                         member_id integer,
+                         member_name text,
+                         total_stake real,
+                         total_count integer,
+                         win_loss real,
                          currency text
                      )
                      """)
@@ -506,15 +520,18 @@ def get_withdrawal_data(date_from, date_to):
     raw_sql = f"""
         SELECT 
             ma.affiliate_id,
-            w.withdrawal_amount as amount,
-            w.currency as currency,
-            pmc.fees->>'affiliate_fee' as affiliate_fee
-        FROM {WITHDRAWAL_TABLE} as w
-        LEFT JOIN payment_method as pm on w.payment_method_code = pm.code
-        LEFT JOIN payment_method_currency as pmc on pm.id = pmc.payment_method_id
-        LEFT JOIN member_account as ma on w.member_id = ma.member_id
-        WHERE w.created_at > '{date_from}'
-        AND w.created_at <= '{date_to}'
+            ma.member_id,
+            ma.login_name AS member_name,
+            w.withdrawal_amount AS amount,
+            w.currency AS currency,
+            w.payment_method_code AS payment_type_code,
+            pmc.fees->>'affiliate_fee' AS affiliate_fee
+        FROM {WITHDRAWAL_TABLE} AS w
+        LEFT JOIN payment_method AS pm on w.payment_method_code = pm.code
+        LEFT JOIN payment_method_currency AS pmc on pm.id = pmc.payment_method_id
+        LEFT JOIN member_account AS ma on w.member_id = ma.member_id
+        WHERE w.created_at >= '{date_from}'
+        AND w.created_at < '{date_to}'
         AND ma.affiliate_id > 0
         AND w.status = {WITHDRAWAL_STATUS_SUCCESSFUL}
     """
@@ -525,6 +542,10 @@ def get_withdrawal_data(date_from, date_to):
     df['affiliate_fee'] = df['affiliate_fee'].astype(float)
     df = df[df['affiliate_fee'] > 0]
 
+    save_commission_fee(df, date_from, date_to, COMMISSION_FEE_TYPE_WITHDRAWAL)
+
+    df = df['affiliate_id', 'amount', 'currency', 'affiliate_fee']
+
     return df
 
 
@@ -534,15 +555,18 @@ def get_deposit_data(date_from, date_to):
     raw_sql = f"""
         SELECT 
             ma.affiliate_id,
-            d.net_amount as amount,
-            d.currency as currency,
-            pmc.fees->>'affiliate_fee' as affiliate_fee
-        FROM {DEPOSIT_TABLE} as d
-        LEFT JOIN payment_method as pm on d.payment_method_code = pm.code
-        LEFT JOIN payment_method_currency as pmc on pm.id = pmc.payment_method_id
-        LEFT JOIN member_account as ma on d.member_id = ma.member_id
-        WHERE d.created_at > '{date_from}'
-        AND d.created_at <= '{date_to}'
+            ma.member_id,
+            ma.login_name AS member_name,
+            d.net_amount AS amount,
+            d.currency AS currency,
+            d.payment_method_code AS payment_type_code,
+            pmc.fees->>'affiliate_fee' AS affiliate_fee
+        FROM {DEPOSIT_TABLE} AS d
+        LEFT JOIN payment_method AS pm on d.payment_method_code = pm.code
+        LEFT JOIN payment_method_currency AS pmc on pm.id = pmc.payment_method_id
+        LEFT JOIN member_account AS ma on d.member_id = ma.member_id
+        WHERE d.created_at >= '{date_from}'
+        AND d.created_at < '{date_to}'
         AND ma.affiliate_id > 0
         AND d.status = {DEPOSIT_STATUS_SUCCESSFUL}
     """
@@ -553,6 +577,10 @@ def get_deposit_data(date_from, date_to):
     df['affiliate_fee'] = df['affiliate_fee'].astype(float)
     df = df[df['affiliate_fee'] > 0]
 
+    save_commission_fee(df, date_from, date_to, COMMISSION_FEE_TYPE_DEPOSIT)
+
+    df = df['affiliate_id', 'amount', 'currency', 'affiliate_fee']
+
     return df
 
 
@@ -561,26 +589,92 @@ def get_adjustment_data(date_from, date_to):
 
     raw_sql = f"""
         SELECT
-            ma.affiliate_id as affiliate_id,
+            ma.affiliate_id,
+            ma.member_id,
+            ma.login_name AS member_name,
             (CASE
                  WHEN a.transaction_type = {ADJUSTMENT_TRANSACTION_TYPE_CREDIT} 
                  THEN a.amount 
                  ELSE -a.amount 
-            END) as amount,
-            a.currency as currency
-        FROM adjustment as a
-        LEFT JOIN member_account as ma on a.member_id = ma.member_id
-        WHERE a.created_at > '{date_from}'
-        AND a.created_at <= '{date_to}'
+            END) AS amount,
+            a.currency AS currency,
+            a.created_at AS transaction_date,
+            ar.name AS adjustment_reason_name
+        FROM adjustment AS a
+        LEFT JOIN member_account AS ma on a.member_id = ma.member_id
+        LEFT JOIN adjustment_reason AS ar on a.reason_id = ar.id
+        WHERE a.created_at >= '{date_from}'
+        AND a.created_at < '{date_to}'
         AND ma.affiliate_id > 0
+        AND ar.is_charge_to_affiliate = true
         AND a.status = {ADJUSTMENT_STATUS_SUCCESSFUL}
     """
 
     df = conn_payment_pg_hook.get_pandas_df(raw_sql)
 
     df['affiliate_fee'] = 100
+    df['remark'] = df['adjustment_reason_name'] + ': ' + df['amount'].astype(str)
+
+    save_commission_fee(df, date_from, date_to, COMMISSION_FEE_TYPE_ADJUSTMENT)
+
+    df = df['affiliate_id', 'amount', 'currency', 'affiliate_fee']
 
     return df
+
+
+def save_commission_fee(df: DataFrame, date_from, date_to, commission_fee_type):
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    print(f"Deleting old commission_fee date_from:{date_from} ; date_to:{date_to} ; type:{commission_fee_type}")
+    delete_sql = f"""
+        DELETE from {COMMISSION_FEE_TABLE}
+        WHERE transaction_date >= '{date_from}'
+        AND transaction_date < '{date_to}'
+        AND commission_status < {COMMISSION_STATUS_APPROVED}
+        AND type = {commission_fee_type}
+        """
+    conn_affiliate_pg_hook.run(delete_sql)
+
+    if df.shape[0] == 0:
+        return
+
+    df['type'] = commission_fee_type
+    df = df.rename(columns={'affiliate_fee':'payment_type_rate'})
+
+    df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
+    df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
+
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+
+    df.to_sql(COMMISSION_FEE_TABLE, engine_affiliate, if_exists='append', index=False)
+
+
+def save_member_wager_product(df: DataFrame, date_from, date_to, product):
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    print(f"Deleting old commission_member_wager_product date_from:{date_from} ; date_to:{date_to} ; product:{product}")
+    delete_sql = f"""
+        DELETE from {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE}
+        WHERE from_transaction_date = '{date_from}'
+        AND to_transaction_date = '{date_to}'
+        AND commission_status < {COMMISSION_STATUS_APPROVED}
+        AND product = {product}
+        """
+    conn_affiliate_pg_hook.run(delete_sql)
+
+    if df.shape[0] == 0:
+        return
+
+    df['product'] = product
+
+    df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
+    df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
+    df['from_transaction_date'] = date_from
+    df['to_transaction_date'] = date_to
+
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+
+    df.to_sql(COMMISSION_MEMBER_WAGER_PRODUCT_TABLE, engine_affiliate, if_exists='append', index=False)
 
 
 @task
@@ -616,25 +710,6 @@ def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
     save_transaction_to_sqlite(transaction_type, transaction_df, datestamp)
 
 
-def get_allbet_wager(date_from, date_to) -> DataFrame:
-    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
-
-    rawsql = f"""
-        SELECT
-            win_or_loss_amount AS win_loss,
-            login_name
-        FROM {ALL_BET_WAGER_TABLE}
-        WHERE bet_time < '{date_to}'
-        AND bet_time > '{date_from}'
-    """
-
-    df = conn_wager_pg_hook.get_pandas_df(rawsql)
-
-    df = get_member_currency(df)
-
-    return df 
-
-
 @task(trigger_rule=TriggerRule.ALL_SUCCESS)
 def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: str, **kwargs):
     import sqlite3
@@ -642,7 +717,7 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
 
     aggregated_transactions = pd.DataFrame()
 
-    datestamps = get_datestamps(payout_frequency, **kwargs)
+    datestamps = get_datestamps(payout_frequency, kwargs['ds'])
 
     for datestamp in datestamps:
         table_name = f"{transaction_type}_{datestamp}"
@@ -675,16 +750,37 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
     save_transaction_to_sqlite(transaction_type, aggregated_transactions, datestamp)
 
 
+def get_allbet_wager(date_from, date_to) -> DataFrame:
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
+
+    rawsql = f"""
+        SELECT
+            valid_amount AS stake, 
+            win_or_loss_amount AS win_loss,
+            login_name
+        FROM {ALL_BET_WAGER_TABLE}
+        WHERE bet_time < '{date_to}'
+        AND bet_time >= '{date_from}'
+    """
+
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
+
+    df = get_member_currency(df)
+
+    return df 
+
+
 def get_asiagaming_wager(date_from, date_to) -> DataFrame:
     conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
 
     rawsql = f"""
         SELECT
+            valid_bet_amount AS stake,
             net_amount AS win_loss,
             player_name AS login_name
         FROM {ASIAGAMING_WAGER_TABLE}
         WHERE bet_time < '{date_to}'
-        AND bet_time > '{date_from}'
+        AND bet_time >= '{date_from}'
         AND flag = 1 and game_type_code = 'AGIN' and platform_type <> 'YOPLAY'
     """
 
@@ -700,11 +796,12 @@ def get_agslot_wager(date_from, date_to) -> DataFrame:
 
     rawsql = f"""
         SELECT
-            net_amount AS win_loss,
+            CASE WHEN net_amount <> 0 THEN bet_amount ELSE 0 END AS stake, 
+            net_amount AS win_loss
             player_name AS login_name
         FROM {ASIAGAMING_WAGER_TABLE}
-        WHERE bet_time <'{date_to}'
-        AND bet_time > '{date_from}'
+        WHERE bet_time < '{date_to}'
+        AND bet_time >= '{date_from}'
         AND flag = 1 and game_type_code = 'SLOT' and platform_type in ('AGIN' ,'XIN')
     """
 
@@ -720,11 +817,12 @@ def get_agyoplay_wager(date_from, date_to) -> DataFrame:
 
     rawsql = f"""
         SELECT
+            (CASE WHEN net_amount <> 0 THEN bet_amount ELSE 0 END) AS stake, 
             player_name AS login_name,
             net_amount AS win_loss
         FROM {ASIAGAMING_WAGER_TABLE}
-        WHERE bet_time <'{date_to}'
-        AND bet_time > '{date_from}'
+        WHERE bet_time < '{date_to}'
+        AND bet_time >= '{date_from}'
         AND flag = 1 and game_type_code = 'AGIN' and platform_type = 'YOPLAY'
     """
 
@@ -740,11 +838,12 @@ def get_sagaming_wager(date_from, date_to) -> DataFrame:
 
     rawsql = f"""
         SELECT
+            rolling AS stake,
             username AS login_name,
             CASE WHEN rolling != 0 THEN result_amount ELSE 0 END AS win_loss
         FROM {SAGAMING_WAGER_TABLE}
-        WHERE bet_time <'{date_to}'
-        AND bet_time > '{date_from}'
+        WHERE bet_time < '{date_to}'
+        AND bet_time >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
@@ -762,8 +861,8 @@ def get_simpleplay_wager(date_from, date_to) -> DataFrame:
             username AS login_name,
             result_amount AS win_loss
         FROM {SIMPLEPLAY_WAGER_TABLE}
-        WHERE bet_time <'{date_to}'
-        AND bet_time > '{date_from}'
+        WHERE bet_time < '{date_to}'
+        AND bet_time >= '{date_from}'
         AND game_type = 'slot'
     """
 
@@ -779,15 +878,18 @@ def get_simpleplayfisher_wager(date_from, date_to) -> DataFrame:
 
     rawsql = f"""
         SELECT
+            bet_amount AS stake, 
             username AS login_name,
             result_amount AS win_loss
         FROM {SIMPLEPLAY_WAGER_TABLE}
-        WHERE bet_time <'{date_to}'
-        AND bet_time > '{date_from}'
+        WHERE bet_time < '{date_to}'
+        AND bet_time >= '{date_from}'
         AND game_type != 'slot'
     """
 
-    df = conn_wager_pg_hook.get_pandas_df(rawsql)
+    df: DataFrame = conn_wager_pg_hook.get_pandas_df(rawsql)
+
+    df['stake'] = df.apply( lambda x: x['stake'] if x['win_loss'] != 0 else 0, axis=1)
 
     df = get_member_currency(df)
 
@@ -800,13 +902,16 @@ def get_pgsoft_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             player_name AS login_name,
+            CASE WHEN win_amount >= 0 THEN bet_amount ELSE 0 END AS stake,
             CASE WHEN win_amount >= 0 THEN win_amount - bet_amount ELSE 0 END AS win_loss
         FROM {PGSOFT_WAGER_TABLE}
-        WHERE bet_time <'{date_to}'
-        AND bet_time > '{date_from}'
+        WHERE bet_time < '{date_to}'
+        AND bet_time >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
+
+    df['stake'] = df.apply( lambda x: x['stake'] if x['win_loss'] != 0 else 0, axis=1)
 
     df = get_member_currency(df)
 
@@ -819,10 +924,11 @@ def get_ebet_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             user_name AS login_name,
+            valid_bet AS stake, 
             CASE WHEN valid_bet != 0 THEN payout - bet ELSE 0 END AS win_loss
         FROM {EBET_WAGER_TABLE}
-        WHERE create_time <'{date_to}'
-        AND create_time > '{date_from}'
+        WHERE create_time < '{date_to}'
+        AND create_time >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
@@ -840,13 +946,13 @@ def get_bti_wager(date_from, date_to) -> DataFrame:
             purchase_id AS bet_id,
             valid_stake AS eligible_stake_amount,
             username AS login_name,
-            CASE WHEN bet_status = 'Cashout' THEN (total_stake - return) ELSE pl END as win_loss,
-            CASE WHEN bet_status = 'Cashout' THEN (total_stake - return) ELSE valid_stake END as stake,
+            CASE WHEN bet_status = 'Cashout' THEN (total_stake - return) ELSE pl END AS win_loss,
+            CASE WHEN bet_status = 'Cashout' THEN (total_stake - return) ELSE valid_stake END AS stake,
     	    odds_in_user_style,
             odds_style_of_user
         FROM {BTI_WAGER_TABLE}
-        WHERE creation_date <'{date_to}'
-        AND creation_date > '{date_from}'
+        WHERE creation_date < '{date_to}'
+        AND creation_date >= '{date_from}'
         AND bet_status NOT IN ('Canceled', 'Open')
     """
 
@@ -862,11 +968,11 @@ def get_bti_wager(date_from, date_to) -> DataFrame:
             ((df.odds_style_of_user == 'Indo') & (((df.odds_in_user_style >= -1.54) & (df.odds_in_user_style <= -0.1)) | 
                                                   ((df.odds_in_user_style >= 1) & (df.odds_in_user_style <= 9)))))
 
-    df['eligible_stake_amount'] = df['stake'].loc[conditions]
+    df['stake'] = df['stake'].loc[conditions]
 
-    df['win_loss'] = df.apply(lambda x: x['win_loss'] if x['eligible_stake_amount'] > 0 else 0, axis=1)
+    df['win_loss'] = df.apply(lambda x: x['win_loss'] if x['stake'] > 0 else 0, axis=1)
 
-    df = df.loc[:, ['login_name', 'win_loss']]
+    df = df.loc[:, ['login_name', 'win_loss', 'stake']]
 
     df = get_member_currency(df)
 
@@ -879,15 +985,15 @@ def get_sabacv_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             trans_id AS bet_id,
-            stake AS eligible_stake_amount, 
+            stake, 
             vendor_member_id AS login_name,
             ticket_status,
             odds,
             odds_type,
             winlost_amount
         FROM {SABACV_WAGER_TABLE}
-        WHERE transaction_time <'{date_to}'
-        AND transaction_time > '{date_from}'
+        WHERE transaction_time < '{date_to}'
+        AND transaction_time >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
@@ -900,11 +1006,11 @@ def get_sabacv_wager(date_from, date_to) -> DataFrame:
             ((df.odds_type == 5) & (((df.odds >= -154) & (df.odds <= -10)) | ((df.odds >= 100) & (df.odds <= 900))))
             ) & ((df.ticket_status != 'waiting') & (df.ticket_status != 'running') & (df.winlost_amount != 0))
 
-    df['eligible_stake_amount'] = df['eligible_stake_amount'].loc[conditions]
+    df['stake'] = df['stake'].loc[conditions]
 
-    df['win_loss'] = df.apply(lambda x: x['winlost_amount'] if x['eligible_stake_amount'] > 0 else 0, axis=1)
+    df['win_loss'] = df.apply(lambda x: x['winlost_amount'] if x['stake'] > 0 else 0, axis=1)
 
-    df = df.loc[:, ['win_loss', 'login_name']]
+    df = df.loc[:, ['win_loss', 'login_name', 'stake']]
 
     df = get_member_currency(df)
 
@@ -917,7 +1023,7 @@ def get_saba_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             wg.trans_id AS bet_id,
-            wg.stake AS eligible_stake_amount, 
+            wg.stake AS stake, 
             wg.vendor_member_id AS login_name,
             wg.odds,
             wg.odds_type,
@@ -925,8 +1031,8 @@ def get_saba_wager(date_from, date_to) -> DataFrame:
             wg.winlost_amount + COALESCE(cash.buyback_amount, 0) + COALESCE(cash.winlost_amount, 0) AS winlost_amount
         FROM {SABA_WAGER_TABLE} AS wg
         LEFT JOIN saba_cashout cash ON cash.trans_id = wg.trans_id
-        WHERE wg.transaction_time <'{date_to}'
-        AND wg.transaction_time > '{date_from}'
+        WHERE wg.transaction_time < '{date_to}'
+        AND wg.transaction_time >= '{date_from}'
         GROUP BY
             wg.transaction_time,
             wg.stake,
@@ -951,11 +1057,11 @@ def get_saba_wager(date_from, date_to) -> DataFrame:
         ((df.odds_type == 5) & (((df.odds >= -154) & (df.odds <= -10)) | ((df.odds >= 100) & (df.odds <= 900))))
         ) & ((df.ticket_status != 'waiting') & (df.ticket_status != 'running') & (df.winlost_amount != 0))
 
-    df['eligible_stake_amount'] = df['eligible_stake_amount'].loc[conditions]
+    df['stake'] = df['stake'].loc[conditions]
 
     df = df.rename(columns={'winlost_amount': 'win_loss'})
 
-    df = df.loc[:, ['win_loss', 'login_name']]
+    df = df.loc[:, ['win_loss', 'login_name', 'stake']]
 
     df = get_member_currency(df)
 
@@ -968,36 +1074,14 @@ def get_saba_number(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             vendor_member_id AS login_name,
-            CASE WHEN winlost_amount <> 0 AND ticket_status <> 'waiting' AND ticket_status <> 'running' THEN winlost_amount ELSE 0 END AS winlost_amount
-        FROM {SABA_NUMBER_TABLE}
-        WHERE transaction_time <'{date_to}'
-        AND transaction_time > '{date_from}'
-    """
-
-    df = conn_wager_pg_hook.get_pandas_df(rawsql)
-
-    df = df.rename(columns={'winlost_amount': 'win_loss'})
-
-    df = get_member_currency(df)
-
-    return df 
-
-
-def get_saba_virtual(date_from, date_to) -> DataFrame:
-    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
-
-    rawsql = f"""
-        SELECT
-            trans_id AS bet_id,
-            stake AS eligible_stake_amount, 
-            vendor_member_id AS login_name,
+            stake AS stake, 
             odds,
             odds_type,
-            winlost_amount,
-            ticket_status
-        FROM {SABA_VIRTUAL_TABLE}
-        WHERE transaction_time <'{date_to}'
-        AND transaction_time > '{date_from}'
+            ticket_status,
+            CASE WHEN winlost_amount <> 0 AND ticket_status <> 'waiting' AND ticket_status <> 'running' THEN winlost_amount ELSE 0 END AS winlost_amount
+        FROM {SABA_NUMBER_TABLE}
+        WHERE transaction_time < '{date_to}'
+        AND transaction_time >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
@@ -1010,11 +1094,49 @@ def get_saba_virtual(date_from, date_to) -> DataFrame:
         ((df.odds_type == 5) & (((df.odds >= -154) & (df.odds <= -10)) | ((df.odds >= 100) & (df.odds <= 900))))
         ) & ((df.ticket_status != 'waiting') & (df.ticket_status != 'running') & (df.winlost_amount != 0))
 
-    df['eligible_stake_amount'] = df['eligible_stake_amount'].loc[conditions]
+    df['stake'] = df['stake'].loc[conditions]
 
     df = df.rename(columns={'winlost_amount': 'win_loss'})
 
-    df = df.loc[:, ['win_loss', 'login_name']]
+    df = df.loc[:, ['win_loss', 'login_name', 'stake']]
+
+    df = get_member_currency(df)
+
+    return df 
+
+
+def get_saba_virtual(date_from, date_to) -> DataFrame:
+    conn_wager_pg_hook = PostgresHook(postgres_conn_id='wager_conn_id')
+
+    rawsql = f"""
+        SELECT
+            trans_id AS bet_id,
+            stake, 
+            vendor_member_id AS login_name,
+            odds,
+            odds_type,
+            winlost_amount,
+            ticket_status
+        FROM {SABA_VIRTUAL_TABLE}
+        WHERE transaction_time <'{date_to}'
+        AND transaction_time >= '{date_from}'
+    """
+
+    df = conn_wager_pg_hook.get_pandas_df(rawsql)
+
+    conditions = (
+        ((df.odds_type == 1) & (((df.odds >= -0.99) & (df.odds <= -0.1)) | ((df.odds >= 0.65) & (df.odds <= 1)))) |
+        ((df.odds_type == 2) & (df.odds >= 0.65)) |
+        ((df.odds_type == 3) & (df.odds >= 1.65)) |
+        ((df.odds_type == 4) & (((df.odds >= -1.54) & (df.odds <= -0.1)) | ((df.odds >= 1) & (df.odds <= 9)))) |
+        ((df.odds_type == 5) & (((df.odds >= -154) & (df.odds <= -10)) | ((df.odds >= 100) & (df.odds <= 900))))
+        ) & ((df.ticket_status != 'waiting') & (df.ticket_status != 'running') & (df.winlost_amount != 0))
+
+    df['stake'] = df['stake'].loc[conditions]
+
+    df = df.rename(columns={'winlost_amount': 'win_loss'})
+
+    df = df.loc[:, ['win_loss', 'login_name', 'stake']]
 
     df = get_member_currency(df)
 
@@ -1026,7 +1148,7 @@ def get_tfgaming_wager(date_from, date_to) -> DataFrame:
 
     rawsql = f"""
         SELECT
-            amount AS eligible_stake_amount, 
+            amount AS stake, 
             member_code AS login_name,
             member_odds, 
             member_odds_style,
@@ -1034,7 +1156,7 @@ def get_tfgaming_wager(date_from, date_to) -> DataFrame:
             settlement_status
         FROM {TFGAMING_TABLE}
         WHERE date_created <'{date_to}'
-        AND date_created > '{date_from}'
+        AND date_created >= '{date_from}'
         AND result_status != 'CANCELLED'
     """
 
@@ -1053,11 +1175,11 @@ def get_tfgaming_wager(date_from, date_to) -> DataFrame:
             ((df.member_odds >= 1) & (df.member_odds <= 9))))
         )) & (df.settlement_status == "settled")
 
-    df['eligible_stake_amount'] = df['eligible_stake_amount'].loc[conditions]
+    df['stake'] = df['stake'].loc[conditions]
 
-    df['win_loss'] = df.apply(lambda x: x['earnings'] if x['eligible_stake_amount'] > 0 else 0, axis=1)
+    df['win_loss'] = df.apply(lambda x: x['earnings'] if x['stake'] > 0 else 0, axis=1)
     
-    df = df.loc[:, ['win_loss', 'login_name']]
+    df = df.loc[:, ['win_loss', 'login_name', 'stake']]
 
     df = get_member_currency(df)
 
@@ -1073,7 +1195,7 @@ def get_evolution_wager(date_from, date_to) -> DataFrame:
             CASE WHEN stake <> payout AND status = 'Resolved' THEN payout - stake ELSE 0 END AS win_loss
         FROM {EVOLUTION_TABLE}
         WHERE placed_on <'{date_to}'
-        AND placed_on > '{date_from}'
+        AND placed_on >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
@@ -1089,10 +1211,11 @@ def get_genesis_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             user_name AS login_name,
+            CASE WHEN stake <> payout THEN stake ELSE 0 END AS stake, 
             CASE WHEN valid_bet != 0 THEN payout - bet ELSE 0 END AS win_loss
         FROM {GENESIS_TABLE}
-        WHERE create_time <'{date_to}'
-        AND create_time > '{date_from}'
+        WHERE create_time < '{date_to}'
+        AND create_time >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
@@ -1108,10 +1231,11 @@ def get_weworld_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             player_id AS login_name,
+            valid_bet_amount AS stake,
             winloss_amount as win_loss
         FROM {WEWORLD_TABLE}
-        WHERE bet_datetime <'{date_to}'
-        AND bet_datetime > '{date_from}'
+        WHERE bet_datetime < '{date_to}'
+        AND bet_datetime >= '{date_from}'
     """
 
     df = conn_wager_pg_hook.get_pandas_df(rawsql)
@@ -1158,22 +1282,21 @@ def get_digitain_wager(date_from, date_to) -> DataFrame:
                     (df.is_parlay == 1)
                 )
 
-    df['eligible_stake_amount'] = df['amount'].loc[conditions]
+    df['stake'] = df['amount'].loc[conditions]
 
-    df['win_loss'] = df.apply(lambda x: x['win_amount'] if x['eligible_stake_amount'] > 0 else 0, axis=1)
+    df['win_loss'] = df.apply(lambda x: x['win_amount'] if x['stake'] > 0 else 0, axis=1)
 
-    df = df.loc[:, ['win_loss', 'login_name']]
+    df = df.loc[:, ['win_loss', 'login_name', 'stake']]
 
     df = get_member_currency(df)
 
     return df
 
 
-def get_datestamps(payout_frequency, **kwargs):
+def get_datestamps(payout_frequency, ds):
     datestamps = []
-    exec_date = datetime.strptime(kwargs['ds'], '%Y-%m-%d')
 
-    _, _, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, exec_date)
+    _, _, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, ds)
 
     from_date = datetime.strptime(from_transaction_date, "%Y-%m-%d")
     to_date = datetime.strptime(to_transaction_date, "%Y-%m-%d")
@@ -1231,8 +1354,11 @@ def update_wager_table(product, fetch_wager_func, **kwargs):
         print("No new data found")
         raise AirflowSkipException
 
+    wager_df['total_count'] = 1
+    wager_df = wager_df.rename(columns={'login_name': 'member_name', 'stake': 'total_stake'})
+
     # Group by member
-    wager_df = wager_df.groupby(['affiliate_id', 'currency', 'login_name']).sum().reset_index()
+    wager_df = wager_df.groupby(['affiliate_id', 'member_id', 'member_name', 'currency']).sum().reset_index()
 
     save_wager_to_sqlite(product, wager_df, datestamp)
 
@@ -1242,9 +1368,9 @@ def aggregate_scheduled_wagers(product, payout_frequency, **kwargs):
     import sqlite3
     import pandas as pd
 
-    wager_df = pd.DataFrame()
+    wager_df = pd.DataFrame(columns=[ "affiliate_id", "member_id", "member_name", "currency", "total_stake", "total_count", "win_loss" ])
 
-    datestamps = get_datestamps(payout_frequency, **kwargs)
+    datestamps = get_datestamps(payout_frequency, kwargs['ds'])
 
     for datestamp in datestamps:
         table_name = f"{product}_{datestamp}"
@@ -1269,12 +1395,12 @@ def aggregate_scheduled_wagers(product, payout_frequency, **kwargs):
         print("No Wager Data Found")
         return
 
-    # Group By login_name
+    # Group By login_nam
     print(wager_df.columns)
-    wager_df = wager_df.groupby(['affiliate_id', 'currency', 'login_name']).sum().reset_index()
+    wager_df = wager_df.groupby(['affiliate_id', 'member_id', 'member_name', 'currency']).sum().reset_index()
 
     wager_df['total_members'] = 1
-    wager_df = wager_df.drop(['login_name'], axis=1)
+
     wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
 
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
@@ -1414,7 +1540,7 @@ def aggregate_scheduled_adjustments(payout_frequency: str, **kwargs):
 
     aggregated_adjustments = pd.DataFrame()
 
-    datestamps = get_datestamps(payout_frequency, **kwargs)
+    datestamps = get_datestamps(payout_frequency, kwargs['ds'])
 
     for datestamp in datestamps:
         table_name = f"adjustment_{datestamp}"
@@ -1486,7 +1612,7 @@ def get_aggregated_wagers(datestamp):
     import sqlite3
     import pandas as pd
 
-    wager_df = pd.DataFrame()
+    wager_df = pd.DataFrame(columns=[ "affiliate_id", "member_id", "member_name", "currency", "total_stake", "total_count", "win_loss" ])
 
     for product in PRODUCT_CODES:
         table_name = f"{product}_{datestamp}"
@@ -1499,7 +1625,7 @@ def get_aggregated_wagers(datestamp):
         if df.shape[0] == 0:
             continue
 
-        df = df.rename(columns={'win_loss': 'company_win_loss'})
+        df = df.rename(columns={'win_loss': 'total_win_loss'})
         print(product, df.columns)
         print(product, df.head())
         wager_df = pd.concat([wager_df, df])
@@ -1507,12 +1633,16 @@ def get_aggregated_wagers(datestamp):
     wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
 
     # List of columns to exclude from conversion to float
-    exclude_columns = ['affiliate_id', 'currency']
+    exclude_columns = ['affiliate_id', 'member_id', 'currency', 'member_name']
 
     # Convert all columns (except the excluded ones) to float
     wager_df.loc[:, wager_df.columns.difference(exclude_columns)] = wager_df.loc[:, wager_df.columns.difference(exclude_columns)].astype(float)
 
-    wager_df['company_win_loss'] = -wager_df['company_win_loss'] # Negate Win Loss
+    # Convert ID's to ints
+    wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
+    wager_df['member_id'] = wager_df['member_id'].astype(int)
+
+    wager_df['total_win_loss'] = -wager_df['total_win_loss'] # Negate Win Loss
     return wager_df
 
 
@@ -1713,10 +1843,10 @@ def get_previous_settlement_df(from_transaction_date, to_transaction_date)->Data
     raw_sql = f"""
         SELECT
             DISTINCT ON(cm.affiliate_id) cm.affiliate_id,
-            cm.rollover_next_month as previous_settlement,
+            cm.rollover_next_month AS previous_settlement,
             cm.currency
-        FROM {COMMISSION_TABLE} as cm
-		LEFT JOIN affiliate_account as aa ON aa.affiliate_id = cm.affiliate_id
+        FROM {COMMISSION_TABLE} AS cm
+		LEFT JOIN affiliate_account AS aa ON aa.affiliate_id = cm.affiliate_id
         WHERE commission_status = {COMMISSION_STATUS_THRESHOLD}
         AND from_transaction_date = '{from_transaction_date}'
         AND to_transaction_date = '{to_transaction_date}'
@@ -1729,8 +1859,10 @@ def get_previous_settlement_df(from_transaction_date, to_transaction_date)->Data
     return df
 
 
-def get_transaction_dates(payout_frequency: str, exec_date: datetime):
+def get_transaction_dates(payout_frequency: str, ds: str):
     import calendar
+
+    exec_date = datetime.strptime(ds, '%Y-%m-%d')
 
     to_date = datetime.now()
     from_date = datetime.now()
@@ -1778,18 +1910,43 @@ def get_transaction_dates(payout_frequency: str, exec_date: datetime):
 
     return prev_from_date.strftime("%Y-%m-%d"), prev_to_date.strftime("%Y-%m-%d"), from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d")
 
+
+def save_member_wager_product( wager_df, from_transaction_date, to_transaction_date ):
+
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+
+    # Removing Previous Data From Previous Run
+    delete_sql = f"""
+        DELETE {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE}
+        WHERE from_transaction_date = '{from_transaction_date}'
+        AND to_transaction_date = '{to_transaction_date}'
+    """
+    conn_affiliate_pg_hook.run(delete_sql)
+
+    print("Inserting ", wager_df.shape[0], f" Commission Data to Postgres {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE} Table")
+    wager_df.to_sql(COMMISSION_MEMBER_WAGER_PRODUCT_TABLE, engine_affiliate, if_exists='append', index=False)
+
     
 @task
 def calculate_affiliate_fees(payout_frequency, **kwargs):
     import pandas as pd
 
-    exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
 
-    prev_from_transaction_date, prev_to_transaction_date, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, exec_date)
+    prev_from_transaction_date, prev_to_transaction_date, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, kwargs['ds'])
     
     transaction_df: DataFrame = get_aggregated_transactions(datestamp)
+        # TODO: Save to cm_table thingy
+        # TODO: Change Column Names
+        # TODO: Drop Non Necessary Columns
+
     wager_df = get_aggregated_wagers(datestamp)
+    save_member_wager_product(wager_df, from_transaction_date, to_transaction_date)
+        # TODO: Save to cm_table thingy
+        # TODO: Change Column Names
+        # TODO: Drop Non Necessary Columns
+
     adjustment_df = get_aggregated_adjustments(datestamp)
 
     prev_settlement_df = get_previous_settlement_df(prev_from_transaction_date, prev_to_transaction_date)
@@ -1853,7 +2010,6 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     conn_affiliate_pg_hook.run(delete_sql)
 
     print("Inserting ", commission_df.shape[0], f" Commission Data to Postgres {COMMISSION_TABLE} Table")
-
     commission_df.to_sql(COMMISSION_TABLE, engine_affiliate, if_exists='append', index=False)
 
 
@@ -1865,7 +2021,7 @@ def delete_old_files(**kwargs):
 
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
 
-    if exec_date.day != 1 :
+    if exec_date.day != 1:
         print("Not yet cleanup day!")
         raise AirflowSkipException
 
@@ -1930,10 +2086,10 @@ def monthly_commission():
             @task_group(group_id=transaction_type)
             def aggregate_transactions_task_group():
 
-                create_monthly_table = create_scheduled_transaction_table(transaction_type, payout_frequency)
+                create_scheduled_table = create_scheduled_transaction_table(transaction_type, payout_frequency)
                 aggregate_transactions_task = aggregate_scheduled_transactions(transaction_type, payout_frequency)
 
-                create_monthly_table >> aggregate_transactions_task
+                create_scheduled_table >> aggregate_transactions_task
 
             return aggregate_transactions_task_group
 
@@ -2018,10 +2174,10 @@ def monthly_commission():
 
     @task_group
     def aggregate_adjustments(payout_frequency):
-        create_monthly_table = create_scheduled_adjustment_table(payout_frequency)
+        create_scheduled_table = create_scheduled_adjustment_table(payout_frequency)
         aggregate_adjustments_task = aggregate_scheduled_adjustments(payout_frequency)
 
-        create_monthly_table >> aggregate_adjustments_task
+        create_scheduled_table >> aggregate_adjustments_task
 
     @task_group
     def daily_data_gathering():
