@@ -132,6 +132,12 @@ COMMISSION_FEE_TYPE_DEPOSIT = 1
 COMMISSION_FEE_TYPE_WITHDRAWAL = 2
 COMMISSION_FEE_TYPE_ADJUSTMENT = 3
 
+COMMISSION_FEE_TYPES = {
+        TRANSACTION_TYPE_DEPOSIT: COMMISSION_FEE_TYPE_DEPOSIT,
+        TRANSACTION_TYPE_WITHDRAWAL: COMMISSION_FEE_TYPE_WITHDRAWAL,
+        TRANSACTION_TYPE_ADJUSTMENT: COMMISSION_FEE_TYPE_ADJUSTMENT,
+        }
+
 UTC_EXEC_TIME = 16
 
 
@@ -197,8 +203,8 @@ def init_sqlite():
 
 # Todo: I think this can be refactored better -- What a mess
 def get_member_currency(wager_df) -> DataFrame:
-    """ Takes member currency from member sqlite file. 
-        If it can't find it there, it fetches it from pg: identityDB"""
+    """ Takes member currency and affiliate_id from member sqlite file. 
+        If it can't find it there, it fetches it from pg: identityDB.member"""
 
     import pandas as pd
 
@@ -432,8 +438,13 @@ def create_scheduled_transaction_table(transaction_type, payout_frequency, **kwa
         curs.execute(f"""
                      CREATE TABLE {table_name} (
                          affiliate_id integer,
+                         member_id integer,
+                         member_name text,
+                         adjustment_reason_name text,
+                         remark text,
                          amount real,
-                         currency text
+                         currency text,
+                         affiliate_fee real
                      )
                      """)
         conn.commit()
@@ -462,6 +473,10 @@ def create_daily_transaction_table(transaction_type, **kwargs):
         curs.execute(f"""
                      CREATE TABLE {table_name} (
                          affiliate_id integer,
+                         member_id integer,
+                         member_name text,
+                         adjustment_reason_name text,
+                         remark text,
                          amount real,
                          currency text,
                          affiliate_fee real
@@ -524,7 +539,7 @@ def get_withdrawal_data(date_from, date_to):
             ma.login_name AS member_name,
             w.withdrawal_amount AS amount,
             w.currency AS currency,
-            w.payment_method_code AS payment_type_code,
+            w.payment_method_code AS payment_method_code,
             pmc.fees->>'affiliate_fee' AS affiliate_fee
         FROM {WITHDRAWAL_TABLE} AS w
         LEFT JOIN payment_method AS pm on w.payment_method_code = pm.code
@@ -542,10 +557,6 @@ def get_withdrawal_data(date_from, date_to):
     df['affiliate_fee'] = df['affiliate_fee'].astype(float)
     df = df[df['affiliate_fee'] > 0]
 
-    save_commission_fee(df, date_from, date_to, COMMISSION_FEE_TYPE_WITHDRAWAL)
-
-    df = df['affiliate_id', 'amount', 'currency', 'affiliate_fee']
-
     return df
 
 
@@ -559,7 +570,7 @@ def get_deposit_data(date_from, date_to):
             ma.login_name AS member_name,
             d.net_amount AS amount,
             d.currency AS currency,
-            d.payment_method_code AS payment_type_code,
+            d.payment_method_code AS payment_method_code,
             pmc.fees->>'affiliate_fee' AS affiliate_fee
         FROM {DEPOSIT_TABLE} AS d
         LEFT JOIN payment_method AS pm on d.payment_method_code = pm.code
@@ -576,10 +587,6 @@ def get_deposit_data(date_from, date_to):
     df[['affiliate_fee']] = df[['affiliate_fee']].fillna(0)
     df['affiliate_fee'] = df['affiliate_fee'].astype(float)
     df = df[df['affiliate_fee'] > 0]
-
-    save_commission_fee(df, date_from, date_to, COMMISSION_FEE_TYPE_DEPOSIT)
-
-    df = df['affiliate_id', 'amount', 'currency', 'affiliate_fee']
 
     return df
 
@@ -615,57 +622,25 @@ def get_adjustment_data(date_from, date_to):
     df['affiliate_fee'] = 100
     df['remark'] = df['adjustment_reason_name'] + ': ' + df['amount'].astype(str)
 
-    save_commission_fee(df, date_from, date_to, COMMISSION_FEE_TYPE_ADJUSTMENT)
-
-    df = df['affiliate_id', 'amount', 'currency', 'affiliate_fee']
-
     return df
 
 
-def save_commission_fee(df: DataFrame, date_from, date_to, commission_fee_type):
+def save_commission_fee(df: DataFrame, date_from, date_to):
     conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
 
-    print(f"Deleting old commission_fee date_from:{date_from} ; date_to:{date_to} ; type:{commission_fee_type}")
+    print(f"Deleting old commission_fee date_from:{date_from} ; date_to:{date_to}")
     delete_sql = f"""
         DELETE from {COMMISSION_FEE_TABLE}
         WHERE transaction_date >= '{date_from}'
         AND transaction_date < '{date_to}'
         AND commission_status < {COMMISSION_STATUS_APPROVED}
-        AND type = {commission_fee_type}
         """
     conn_affiliate_pg_hook.run(delete_sql)
 
     if df.shape[0] == 0:
         return
 
-    df['type'] = commission_fee_type
     df = df.rename(columns={'affiliate_fee':'payment_type_rate'})
-
-    df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
-    df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
-
-    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
-
-    df.to_sql(COMMISSION_FEE_TABLE, engine_affiliate, if_exists='append', index=False)
-
-
-def save_member_wager_product(df: DataFrame, date_from, date_to, product):
-    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
-
-    print(f"Deleting old commission_member_wager_product date_from:{date_from} ; date_to:{date_to} ; product:{product}")
-    delete_sql = f"""
-        DELETE from {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE}
-        WHERE from_transaction_date = '{date_from}'
-        AND to_transaction_date = '{date_to}'
-        AND commission_status < {COMMISSION_STATUS_APPROVED}
-        AND product = {product}
-        """
-    conn_affiliate_pg_hook.run(delete_sql)
-
-    if df.shape[0] == 0:
-        return
-
-    df['product'] = product
 
     df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
     df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
@@ -674,6 +649,33 @@ def save_member_wager_product(df: DataFrame, date_from, date_to, product):
 
     engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
 
+    df.to_sql(COMMISSION_FEE_TABLE, engine_affiliate, if_exists='append', index=False)
+
+
+def save_member_wager_product(df: DataFrame, date_from, date_to):
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    print(f"Deleting old commission_member_wager_product date_from:{date_from} ; date_to:{date_to}")
+    delete_sql = f"""
+        DELETE from {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE}
+        WHERE from_transaction_date = '{date_from}'
+        AND to_transaction_date = '{date_to}'
+        AND commission_status < {COMMISSION_STATUS_APPROVED}
+        """
+    conn_affiliate_pg_hook.run(delete_sql)
+
+    if df.shape[0] == 0:
+        return
+
+    df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
+    df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
+    df['from_transaction_date'] = date_from
+    df['to_transaction_date'] = date_to
+
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+
+    print(f"Inserting {df.shape[0]} data into {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE}")
+    print(df.columns)
     df.to_sql(COMMISSION_MEMBER_WAGER_PRODUCT_TABLE, engine_affiliate, if_exists='append', index=False)
 
 
@@ -700,7 +702,22 @@ def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
         print(f"No {transaction_type}s found")
         raise AirflowSkipException
 
-    transaction_df = transaction_df.groupby(['affiliate_id', 'currency', 'affiliate_fee']).sum().reset_index()
+    if transaction_type != TRANSACTION_TYPE_ADJUSTMENT:
+        transaction_df['remark'] = None
+        transaction_df['adjustment_reason_name'] = None
+
+    groupby_columns = [
+            "affiliate_id",
+            "member_id",
+            "member_name",
+            "currency",
+            "payment_method_code",
+            "affiliate_fee",
+            "remark",
+            "adjustment_reason_name"
+        ]
+
+    transaction_df = transaction_df.groupby(groupby_columns).sum().reset_index()
 
     transaction_df['affiliate_fee'] = pd.to_numeric(transaction_df['affiliate_fee'], errors='coerce')
 
@@ -715,9 +732,19 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
     import sqlite3
     import pandas as pd
 
-    aggregated_transactions = pd.DataFrame()
+    aggregated_transactions = pd.DataFrame([
+        "affiliate_id",
+        "member_id",
+        "member_name",
+        "adjustment_reason_name",
+        "remark",
+        "amount",
+        "currency",
+        "affiliate_fee"
+        ])
 
     datestamps = get_datestamps(payout_frequency, kwargs['ds'])
+    print(datestamps)
 
     for datestamp in datestamps:
         table_name = f"{transaction_type}_{datestamp}"
@@ -735,14 +762,26 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
             daily_transactions = pd.read_sql(f"SELECT * FROM {table_name}", conn)
             print(f"{daily_transactions.shape[0]} Affiliates Updated on {datestamp}")
 
+            if daily_transactions.shape[0] == 0:
+                continue
+
             aggregated_transactions = pd.concat([aggregated_transactions, daily_transactions])
 
     if aggregated_transactions.shape[0] == 0:
         print("No Transaction Data Found")
-        return
+        raise AirflowSkipException
 
-    aggregated_transactions = aggregated_transactions.drop(columns=['affiliate_fee'])
-    aggregated_transactions = aggregated_transactions.groupby(['affiliate_id', 'currency']).sum().reset_index()
+    groupby_columns = [
+            "affiliate_id",
+            "member_id",
+            "member_name",
+            "adjustment_reason_name",
+            "remark",
+            "currency",
+            "affiliate_fee"
+            ]
+
+    aggregated_transactions = aggregated_transactions.groupby(groupby_columns).sum().reset_index()
     print(f"Total Affiliate Data for this {payout_frequency} period: ", aggregated_transactions.shape[0])
 
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
@@ -797,7 +836,7 @@ def get_agslot_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             CASE WHEN net_amount <> 0 THEN bet_amount ELSE 0 END AS stake, 
-            net_amount AS win_loss
+            net_amount AS win_loss,
             player_name AS login_name
         FROM {ASIAGAMING_WAGER_TABLE}
         WHERE bet_time < '{date_to}'
@@ -1211,7 +1250,7 @@ def get_genesis_wager(date_from, date_to) -> DataFrame:
     rawsql = f"""
         SELECT
             user_name AS login_name,
-            CASE WHEN stake <> payout THEN stake ELSE 0 END AS stake, 
+            valid_bet AS stake, 
             CASE WHEN valid_bet != 0 THEN payout - bet ELSE 0 END AS win_loss
         FROM {GENESIS_TABLE}
         WHERE create_time < '{date_to}'
@@ -1389,19 +1428,20 @@ def aggregate_scheduled_wagers(product, payout_frequency, **kwargs):
             print(f"{product_df.shape[0]} Affiliates Updated on {datestamp}")
             print(product_df.columns)
 
+            if product_df.shape[0] == 0:
+                continue
+
             wager_df = pd.concat([wager_df, product_df])
 
     if wager_df.shape[0] == 0:
         print("No Wager Data Found")
         return
 
-    # Group By login_nam
+    # Group By login_name
     print(wager_df.columns)
     wager_df = wager_df.groupby(['affiliate_id', 'member_id', 'member_name', 'currency']).sum().reset_index()
 
     wager_df['total_members'] = 1
-
-    wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
 
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
 
@@ -1580,30 +1620,44 @@ def get_aggregated_transactions(datestamp):
     import sqlite3
     import pandas as pd
 
-    transaction_df = pd.DataFrame()
+    transaction_df = pd.DataFrame([
+        "affiliate_id",
+        "member_id",
+        "member_name",
+        "currency",
+        "adjustment_reason_name",
+        "remark",
+        "amount",
+        "affiliate_fee"
+        ])
 
     for transaction_type in TRANSACTION_TYPES:
         table_name = f"{transaction_type}_{datestamp}"
         filepath = f"{SQLITE_TRANSACTIONS_PATH}/{transaction_type}/{table_name}.db"
 
         conn = sqlite3.connect(filepath)
-        
+
         df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
 
-        if transaction_type == TRANSACTION_TYPE_ADJUSTMENT:
-            df = df.rename(columns={'amount': 'other_fee'})
-        else:
-            df = df.rename(columns={'amount': 'expenses'})
+        if df.shape[0] == 0:
+            continue
+
+        transaction_df['type'] = COMMISSION_FEE_TYPES[transaction_type]
 
         transaction_df = pd.concat([transaction_df, df])
 
     transaction_df['affiliate_id'] = transaction_df['affiliate_id'].astype(int)
+    transaction_df['member_id'] = transaction_df['member_id'].astype(int)
+    transaction_df['amount'] = transaction_df['amount'].astype(float)
 
-    # List of columns to exclude from conversion to float
-    exclude_columns = ['affiliate_id', 'currency']
+    return transaction_df
 
-    # Convert all columns (except the excluded ones) to float
-    transaction_df.loc[:, transaction_df.columns.difference(exclude_columns)] = transaction_df.loc[:, transaction_df.columns.difference(exclude_columns)].astype(float)
+
+def prep_transaction_df(transaction_df: DataFrame) -> DataFrame:
+    transaction_df['other_fee'] = transaction_df.apply(lambda x: x['amount'] if x['type'] == COMMISSION_FEE_TYPE_ADJUSTMENT else 0)
+    transaction_df['expenses'] = transaction_df.apply(lambda x: x['amount'] if x['type'] != COMMISSION_FEE_TYPE_ADJUSTMENT else 0)
+
+    transaction_df = transaction_df.drop(columns=['amount', 'member_id', 'member_name', 'adjustment_reason_name', 'remark'])
 
     return transaction_df
 
@@ -1625,24 +1679,31 @@ def get_aggregated_wagers(datestamp):
         if df.shape[0] == 0:
             continue
 
+        df['product'] = product
         df = df.rename(columns={'win_loss': 'total_win_loss'})
         print(product, df.columns)
         print(product, df.head())
         wager_df = pd.concat([wager_df, df])
 
-    wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
-
-    # List of columns to exclude from conversion to float
-    exclude_columns = ['affiliate_id', 'member_id', 'currency', 'member_name']
-
-    # Convert all columns (except the excluded ones) to float
-    wager_df.loc[:, wager_df.columns.difference(exclude_columns)] = wager_df.loc[:, wager_df.columns.difference(exclude_columns)].astype(float)
-
-    # Convert ID's to ints
+    # Type Conversion
     wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
     wager_df['member_id'] = wager_df['member_id'].astype(int)
+    wager_df['total_stake'] = wager_df['total_stake'].astype(float)
+    wager_df['total_win_loss'] = -wager_df['total_win_loss'].astype(float) # Negate Win Loss
 
-    wager_df['total_win_loss'] = -wager_df['total_win_loss'] # Negate Win Loss
+    groupby_columns = ["affiliate_id", "member_id", "member_name", "currency", "product"]
+
+    wager_df = wager_df.groupby(groupby_columns).sum().reset_index()
+
+    return wager_df
+
+
+def prep_wager_df(wager_df: DataFrame) -> DataFrame:
+    print("Preparing Wagers")
+    wager_df = wager_df.drop(columns=['member_id', 'member_name', 'product', 'total_count'])
+    wager_df = wager_df.rename(columns={'total_win_loss':'company_win_loss'})
+    wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
+
     return wager_df
 
 
@@ -1911,23 +1972,6 @@ def get_transaction_dates(payout_frequency: str, ds: str):
     return prev_from_date.strftime("%Y-%m-%d"), prev_to_date.strftime("%Y-%m-%d"), from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d")
 
 
-def save_member_wager_product( wager_df, from_transaction_date, to_transaction_date ):
-
-    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
-    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
-
-    # Removing Previous Data From Previous Run
-    delete_sql = f"""
-        DELETE {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE}
-        WHERE from_transaction_date = '{from_transaction_date}'
-        AND to_transaction_date = '{to_transaction_date}'
-    """
-    conn_affiliate_pg_hook.run(delete_sql)
-
-    print("Inserting ", wager_df.shape[0], f" Commission Data to Postgres {COMMISSION_MEMBER_WAGER_PRODUCT_TABLE} Table")
-    wager_df.to_sql(COMMISSION_MEMBER_WAGER_PRODUCT_TABLE, engine_affiliate, if_exists='append', index=False)
-
-    
 @task
 def calculate_affiliate_fees(payout_frequency, **kwargs):
     import pandas as pd
@@ -1937,15 +1981,18 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     prev_from_transaction_date, prev_to_transaction_date, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, kwargs['ds'])
     
     transaction_df: DataFrame = get_aggregated_transactions(datestamp)
-        # TODO: Save to cm_table thingy
-        # TODO: Change Column Names
-        # TODO: Drop Non Necessary Columns
+    save_commission_fee(transaction_df, from_transaction_date, to_transaction_date)
+    transaction_df = prep_transaction_df(transaction_df)
+        # TODO: Save to cm_table thingy -- check
+        # TODO: Change Column Names -- check
+        # TODO: Drop Non Necessary Columns -- check
 
     wager_df = get_aggregated_wagers(datestamp)
     save_member_wager_product(wager_df, from_transaction_date, to_transaction_date)
-        # TODO: Save to cm_table thingy
-        # TODO: Change Column Names
-        # TODO: Drop Non Necessary Columns
+    wager_df = prep_wager_df(wager_df)
+        # TODO: Save to cm_table thingy -- check
+        # TODO: Change Column Names -- check
+        # TODO: Drop Non Necessary Columns -- check
 
     adjustment_df = get_aggregated_adjustments(datestamp)
 
