@@ -444,7 +444,7 @@ def create_scheduled_transaction_table(transaction_type, payout_frequency, **kwa
                          remark text,
                          amount real,
                          currency text,
-                         affiliate_fee real
+                         payment_type_rate real
                      )
                      """)
         conn.commit()
@@ -479,7 +479,7 @@ def create_daily_transaction_table(transaction_type, **kwargs):
                          remark text,
                          amount real,
                          currency text,
-                         affiliate_fee real
+                         payment_type_rate real
                      )
                      """)
         conn.commit()
@@ -540,7 +540,7 @@ def get_withdrawal_data(date_from, date_to):
             w.withdrawal_amount AS amount,
             w.currency AS currency,
             w.payment_method_code AS payment_method_code,
-            pmc.fees->>'affiliate_fee' AS affiliate_fee
+            pmc.fees->>'affiliate_fee' AS payment_type_rate
         FROM {WITHDRAWAL_TABLE} AS w
         LEFT JOIN payment_method AS pm on w.payment_method_code = pm.code
         LEFT JOIN payment_method_currency AS pmc on pm.id = pmc.payment_method_id
@@ -553,9 +553,9 @@ def get_withdrawal_data(date_from, date_to):
 
     df = conn_payment_pg_hook.get_pandas_df(raw_sql)
 
-    df[['affiliate_fee']] = df[['affiliate_fee']].fillna(0)
-    df['affiliate_fee'] = df['affiliate_fee'].astype(float)
-    df = df[df['affiliate_fee'] > 0]
+    df[['payment_type_rate']] = df[['payment_type_rate']].fillna(0)
+    df['payment_type_rate'] = df['payment_type_rate'].astype(float)
+    df = df[df['payment_type_rate'] > 0]
 
     return df
 
@@ -571,7 +571,7 @@ def get_deposit_data(date_from, date_to):
             d.net_amount AS amount,
             d.currency AS currency,
             d.payment_method_code AS payment_method_code,
-            pmc.fees->>'affiliate_fee' AS affiliate_fee
+            pmc.fees->>'affiliate_fee' AS payment_type_rate
         FROM {DEPOSIT_TABLE} AS d
         LEFT JOIN payment_method AS pm on d.payment_method_code = pm.code
         LEFT JOIN payment_method_currency AS pmc on pm.id = pmc.payment_method_id
@@ -584,9 +584,9 @@ def get_deposit_data(date_from, date_to):
 
     df = conn_payment_pg_hook.get_pandas_df(raw_sql)
 
-    df[['affiliate_fee']] = df[['affiliate_fee']].fillna(0)
-    df['affiliate_fee'] = df['affiliate_fee'].astype(float)
-    df = df[df['affiliate_fee'] > 0]
+    df[['payment_type_rate']] = df[['payment_type_rate']].fillna(0)
+    df['payment_type_rate'] = df['payment_type_rate'].astype(float)
+    df = df[df['payment_type_rate'] > 0]
 
     return df
 
@@ -605,7 +605,6 @@ def get_adjustment_data(date_from, date_to):
                  ELSE -a.amount 
             END) AS amount,
             a.currency AS currency,
-            a.created_at AS transaction_date,
             ar.name AS adjustment_reason_name
         FROM adjustment AS a
         LEFT JOIN member_account AS ma on a.member_id = ma.member_id
@@ -619,7 +618,7 @@ def get_adjustment_data(date_from, date_to):
 
     df = conn_payment_pg_hook.get_pandas_df(raw_sql)
 
-    df['affiliate_fee'] = 100
+    df['payment_type_rate'] = 100
     df['remark'] = df['adjustment_reason_name'] + ': ' + df['amount'].astype(str)
 
     return df
@@ -631,16 +630,14 @@ def save_commission_fee(df: DataFrame, date_from, date_to):
     print(f"Deleting old commission_fee date_from:{date_from} ; date_to:{date_to}")
     delete_sql = f"""
         DELETE from {COMMISSION_FEE_TABLE}
-        WHERE transaction_date >= '{date_from}'
-        AND transaction_date < '{date_to}'
+        WHERE from_transaction_date = '{date_from}'
+        AND to_transaction_date = '{date_to}'
         AND commission_status < {COMMISSION_STATUS_APPROVED}
         """
     conn_affiliate_pg_hook.run(delete_sql)
 
     if df.shape[0] == 0:
         return
-
-    df = df.rename(columns={'affiliate_fee':'payment_type_rate'})
 
     df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
     df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
@@ -681,7 +678,6 @@ def save_member_wager_product(df: DataFrame, date_from, date_to):
 
 @task
 def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
-    import pandas as pd
 
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
 
@@ -703,8 +699,10 @@ def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
         raise AirflowSkipException
 
     if transaction_type != TRANSACTION_TYPE_ADJUSTMENT:
-        transaction_df['remark'] = None
-        transaction_df['adjustment_reason_name'] = None
+        transaction_df['remark'] = ""
+        transaction_df['adjustment_reason_name'] = ""
+    else:
+        transaction_df['payment_method_code'] = ""
 
     groupby_columns = [
             "affiliate_id",
@@ -712,16 +710,14 @@ def update_transaction_table(get_transaction_func, transaction_type, **kwargs):
             "member_name",
             "currency",
             "payment_method_code",
-            "affiliate_fee",
+            "payment_type_rate",
             "remark",
             "adjustment_reason_name"
         ]
 
+    print(transaction_df.columns)
+
     transaction_df = transaction_df.groupby(groupby_columns).sum().reset_index()
-
-    transaction_df['affiliate_fee'] = pd.to_numeric(transaction_df['affiliate_fee'], errors='coerce')
-
-    transaction_df['amount'] = transaction_df['amount'] * transaction_df['affiliate_fee'] * 0.01
 
     datestamp = date_from.strftime("%Y%m%d")
     save_transaction_to_sqlite(transaction_type, transaction_df, datestamp)
@@ -732,7 +728,7 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
     import sqlite3
     import pandas as pd
 
-    aggregated_transactions = pd.DataFrame([
+    aggregated_transactions = pd.DataFrame(columns=[
         "affiliate_id",
         "member_id",
         "member_name",
@@ -740,11 +736,10 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
         "remark",
         "amount",
         "currency",
-        "affiliate_fee"
+        "payment_type_rate"
         ])
 
     datestamps = get_datestamps(payout_frequency, kwargs['ds'])
-    print(datestamps)
 
     for datestamp in datestamps:
         table_name = f"{transaction_type}_{datestamp}"
@@ -769,7 +764,7 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
 
     if aggregated_transactions.shape[0] == 0:
         print("No Transaction Data Found")
-        raise AirflowSkipException
+        return
 
     groupby_columns = [
             "affiliate_id",
@@ -778,7 +773,7 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
             "adjustment_reason_name",
             "remark",
             "currency",
-            "affiliate_fee"
+            "payment_type_rate"
             ]
 
     aggregated_transactions = aggregated_transactions.groupby(groupby_columns).sum().reset_index()
@@ -1441,8 +1436,6 @@ def aggregate_scheduled_wagers(product, payout_frequency, **kwargs):
     print(wager_df.columns)
     wager_df = wager_df.groupby(['affiliate_id', 'member_id', 'member_name', 'currency']).sum().reset_index()
 
-    wager_df['total_members'] = 1
-
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
 
     save_wager_to_sqlite(product, wager_df, datestamp)
@@ -1620,7 +1613,7 @@ def get_aggregated_transactions(datestamp):
     import sqlite3
     import pandas as pd
 
-    transaction_df = pd.DataFrame([
+    transaction_df = pd.DataFrame(columns=[
         "affiliate_id",
         "member_id",
         "member_name",
@@ -1628,7 +1621,7 @@ def get_aggregated_transactions(datestamp):
         "adjustment_reason_name",
         "remark",
         "amount",
-        "affiliate_fee"
+        "payment_type_rate"
         ])
 
     for transaction_type in TRANSACTION_TYPES:
@@ -1639,10 +1632,10 @@ def get_aggregated_transactions(datestamp):
 
         df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
 
+        df['type'] = COMMISSION_FEE_TYPES[transaction_type]
+
         if df.shape[0] == 0:
             continue
-
-        transaction_df['type'] = COMMISSION_FEE_TYPES[transaction_type]
 
         transaction_df = pd.concat([transaction_df, df])
 
@@ -1654,10 +1647,33 @@ def get_aggregated_transactions(datestamp):
 
 
 def prep_transaction_df(transaction_df: DataFrame) -> DataFrame:
-    transaction_df['other_fee'] = transaction_df.apply(lambda x: x['amount'] if x['type'] == COMMISSION_FEE_TYPE_ADJUSTMENT else 0)
-    transaction_df['expenses'] = transaction_df.apply(lambda x: x['amount'] if x['type'] != COMMISSION_FEE_TYPE_ADJUSTMENT else 0)
+    import pandas as pd
+    import numpy as np
+    print("Preparing Transactions")
 
-    transaction_df = transaction_df.drop(columns=['amount', 'member_id', 'member_name', 'adjustment_reason_name', 'remark'])
+    transaction_df['deposit_amount'] = np.where(transaction_df['type'] == COMMISSION_FEE_TYPE_DEPOSIT, transaction_df['amount'], 0)
+    transaction_df['withdrawal_amount'] = np.where(transaction_df['type'] == COMMISSION_FEE_TYPE_WITHDRAWAL, transaction_df['amount'], 0)
+
+    transaction_df['payment_type_rate'] = pd.to_numeric(transaction_df['payment_type_rate'], errors='coerce')
+    transaction_df['amount'] = transaction_df['amount'] * transaction_df['payment_type_rate'] * 0.01
+
+    transaction_df['other_fee'] = np.where(transaction_df['type'] == COMMISSION_FEE_TYPE_ADJUSTMENT, transaction_df['amount'], 0)
+
+    transaction_df['expenses'] = np.where(transaction_df['type'] == COMMISSION_FEE_TYPE_DEPOSIT, transaction_df['amount'], 0)
+    transaction_df['expenses'] = np.where(transaction_df['type'] == COMMISSION_FEE_TYPE_WITHDRAWAL, transaction_df['amount'], 0)
+
+    transaction_df = transaction_df.drop(columns=[
+        'amount', 
+        'member_id', 
+        'member_name', 
+        'payment_method_code', 
+        'adjustment_reason_name', 
+        'remark', 
+        'type', 
+        'payment_type_rate',
+        'from_transaction_date',
+        'to_transaction_date'
+        ])
 
     return transaction_df
 
@@ -1680,10 +1696,11 @@ def get_aggregated_wagers(datestamp):
             continue
 
         df['product'] = product
-        df = df.rename(columns={'win_loss': 'total_win_loss'})
         print(product, df.columns)
         print(product, df.head())
         wager_df = pd.concat([wager_df, df])
+
+    wager_df = wager_df.rename(columns={'win_loss': 'total_win_loss'})
 
     # Type Conversion
     wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
@@ -1700,8 +1717,11 @@ def get_aggregated_wagers(datestamp):
 
 def prep_wager_df(wager_df: DataFrame) -> DataFrame:
     print("Preparing Wagers")
-    wager_df = wager_df.drop(columns=['member_id', 'member_name', 'product', 'total_count'])
+    print(wager_df.columns)
+    wager_df = wager_df.drop(columns=['member_id', 'member_name', 'product', 'total_count', 'from_transaction_date', 'to_transaction_date'])
     wager_df = wager_df.rename(columns={'total_win_loss':'company_win_loss'})
+    wager_df['total_members'] = 1
+
     wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
 
     return wager_df
@@ -1803,13 +1823,13 @@ def get_usd_rate(row: Series):
     DEFAULT_COMMISSION_THB_USD_RATE = 0.028
     DEFAULT_COMMISSION_RMB_USD_RATE = 0.14
 
-    if row['currency'] == CURRENCY_VND:
+    if str(row['currency']).upper() == CURRENCY_VND:
         return Variable.get("COMMISSION_VND_USD_RATE", DEFAULT_COMMISSION_VND_USD_RATE)
-    if row['currency'] == CURRENCY_THB:
+    if str(row['currency']).upper() == CURRENCY_THB:
         return Variable.get("COMMISSION_THB_USD_RATE", DEFAULT_COMMISSION_THB_USD_RATE)
-    if row['currency'] == CURRENCY_RMB:
+    if str(row['currency']).upper() == CURRENCY_RMB:
         return Variable.get("COMMISSION_RMB_USD_RATE", DEFAULT_COMMISSION_RMB_USD_RATE)
-    if row['currency'] == CURRENCY_USD:
+    if str(row['currency']).upper() == CURRENCY_USD:
         return 1
 
     print("Unsupported Currency: ", row['currency'])
@@ -1921,7 +1941,6 @@ def get_previous_settlement_df(from_transaction_date, to_transaction_date)->Data
 
 
 def get_transaction_dates(payout_frequency: str, ds: str):
-    import calendar
 
     exec_date = datetime.strptime(ds, '%Y-%m-%d')
 
@@ -1931,43 +1950,33 @@ def get_transaction_dates(payout_frequency: str, ds: str):
     prev_from_date = datetime.now()
     
     if payout_frequency == PAYOUT_FREQUENCY_WEEKLY:
-        to_date = exec_date - timedelta(days=1)
-        from_date = to_date - timedelta(days=6)
+        to_date = exec_date
+        from_date = to_date - timedelta(days=7)
 
-        prev_to_date = from_date - timedelta(days=1)
-        prev_from_date = prev_to_date - timedelta(days=6)
+        prev_to_date = from_date
+        prev_from_date = prev_to_date - timedelta(days=7)
 
     if payout_frequency == PAYOUT_FREQUENCY_MONTHLY:
-        to_date = exec_date - timedelta(days=1)
+        to_date = exec_date
+        from_date = (to_date - timedelta(days=1)).replace(day=1)
 
-        year = to_date.year
-        month = to_date.month
-        num_days = calendar.monthrange(year, month)[1]
-
-        from_date = to_date - timedelta(days=num_days-1)
-
-        prev_to_date = from_date - timedelta(days=1)
-
-        prev_year = prev_to_date.year
-        prev_month = prev_to_date.month
-        num_days = calendar.monthrange(prev_year, prev_month)[1]
-
-        prev_from_date = prev_to_date - timedelta(days=num_days-1)
+        prev_to_date = from_date
+        prev_from_date = (prev_to_date - timedelta(days=1)).replace(day=1)
 
     if payout_frequency == PAYOUT_FREQUENCY_BI_MONTHLY:
         if exec_date.day == 1:
-            to_date = exec_date - timedelta(days=1)
-            from_date = to_date.replace(day=BI_MONTHLY_DAY)
+            to_date = exec_date
+            from_date = (to_date - timedelta(days=1)).replace(day=BI_MONTHLY_DAY)
 
-            prev_to_date = from_date - timedelta(days=1)
+            prev_to_date = from_date
             prev_from_date = prev_to_date.replace(day=1)
 
         else:
-            to_date = exec_date - timedelta(days=1)
+            to_date = exec_date
             from_date = to_date.replace(day=1)
 
-            prev_to_date = from_date - timedelta(days=1)
-            prev_from_date = prev_to_date.replace(day=BI_MONTHLY_DAY)
+            prev_to_date = from_date
+            prev_from_date = (prev_to_date - timedelta(days=1)).replace(day=BI_MONTHLY_DAY)
 
     return prev_from_date.strftime("%Y-%m-%d"), prev_to_date.strftime("%Y-%m-%d"), from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d")
 
@@ -2004,7 +2013,9 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     print(wager_df[:10])
 
     commission_df = pd.concat([transaction_df, wager_df]).fillna(0)
-    commission_df = commission_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
+    print(commission_df.columns)
+    print(commission_df.dtypes)
+    commission_df = commission_df.groupby(['affiliate_id', 'currency', 'commission_status']).sum().reset_index()
 
     print("Merged Transaction and Wager Data")
     print(commission_df.columns, commission_df.shape[0])
