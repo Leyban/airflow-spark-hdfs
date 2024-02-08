@@ -733,6 +733,7 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
         "member_id",
         "member_name",
         "adjustment_reason_name",
+        "payment_method_code",
         "remark",
         "amount",
         "currency",
@@ -771,11 +772,11 @@ def aggregate_scheduled_transactions(transaction_type: str, payout_frequency: st
             "member_id",
             "member_name",
             "adjustment_reason_name",
+            "payment_method_code",
             "remark",
             "currency",
             "payment_type_rate"
             ]
-
     aggregated_transactions = aggregated_transactions.groupby(groupby_columns).sum().reset_index()
     print(f"Total Affiliate Data for this {payout_frequency} period: ", aggregated_transactions.shape[0])
 
@@ -1664,15 +1665,13 @@ def prep_transaction_df(transaction_df: DataFrame) -> DataFrame:
 
     transaction_df = transaction_df.drop(columns=[
         'amount', 
-        'member_id', 
-        'member_name', 
-        'payment_method_code', 
         'adjustment_reason_name', 
+        'payment_method_code', 
         'remark', 
         'type', 
         'payment_type_rate',
         'from_transaction_date',
-        'to_transaction_date'
+        'to_transaction_date',
         ])
 
     return transaction_df
@@ -1706,7 +1705,7 @@ def get_aggregated_wagers(datestamp):
     wager_df['affiliate_id'] = wager_df['affiliate_id'].astype(int)
     wager_df['member_id'] = wager_df['member_id'].astype(int)
     wager_df['total_stake'] = wager_df['total_stake'].astype(float)
-    wager_df['total_win_loss'] = -wager_df['total_win_loss'].astype(float) # Negate Win Loss
+    wager_df['total_win_loss'] = wager_df['total_win_loss'].astype(float)
 
     groupby_columns = ["affiliate_id", "member_id", "member_name", "currency", "product"]
 
@@ -1718,11 +1717,15 @@ def get_aggregated_wagers(datestamp):
 def prep_wager_df(wager_df: DataFrame) -> DataFrame:
     print("Preparing Wagers")
     print(wager_df.columns)
-    wager_df = wager_df.drop(columns=['member_id', 'member_name', 'product', 'total_count', 'from_transaction_date', 'to_transaction_date'])
-    wager_df = wager_df.rename(columns={'total_win_loss':'company_win_loss'})
-    wager_df['total_members'] = 1
 
-    wager_df = wager_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
+    wager_df = wager_df.drop(columns=[
+        'product', 
+        'total_count',
+        'from_transaction_date',
+        'to_transaction_date',
+        ])
+    wager_df = wager_df.rename(columns={'total_win_loss':'company_win_loss'})
+    wager_df['company_win_loss'] = -wager_df['company_win_loss'] # Negate Win Loss
 
     return wager_df
 
@@ -1742,6 +1745,55 @@ def get_aggregated_adjustments(datestamp):
 
     df['affiliate_id'] = df['affiliate_id'].astype(int)
     return df
+
+
+def save_commission_summary(df, date_from, date_to):
+    conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+
+    print(f"Deleting old commission_fee date_from:{date_from} ; date_to:{date_to}")
+    delete_sql = f"""
+        DELETE from {COMMISSION_SUMMARY_TABLE}
+        WHERE from_transaction_date = '{date_from}'
+        AND to_transaction_date = '{date_to}'
+        AND commission_status < {COMMISSION_STATUS_APPROVED}
+        """
+    conn_affiliate_pg_hook.run(delete_sql)
+
+    if df.shape[0] == 0:
+        return
+
+    df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
+    df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
+    df['from_transaction_date'] = date_from
+    df['to_transaction_date'] = date_to
+
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+
+    df.to_sql(COMMISSION_SUMMARY_TABLE, engine_affiliate, if_exists='append', index=False)
+    
+
+def prep_commission_df(commission_df):
+    print("Preparing Commission Data")
+
+    commission_df = commission_df.drop(columns=[
+        'deposit_amount', 
+        'withdrawal_amount', 
+        'member_id', 
+        'member_name',
+        'from_transaction_date',
+        'to_transaction_date',
+        ])
+    commission_df['total_members'] = 1
+
+    groupby_columns = [
+            'affiliate_id', 
+            'currency', 
+            'usd_rate',
+            'commission_status',
+            ]
+    commission_df = commission_df.groupby(groupby_columns).sum().reset_index()
+
+    return commission_df
 
 
 @task(trigger_rule=TriggerRule.ALL_DONE)
@@ -1988,34 +2040,38 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     datestamp = payout_frequency + "_" + kwargs['ds_nodash']
 
     prev_from_transaction_date, prev_to_transaction_date, from_transaction_date, to_transaction_date = get_transaction_dates(payout_frequency, kwargs['ds'])
-    
-    transaction_df: DataFrame = get_aggregated_transactions(datestamp)
+
+    affiliate_df = get_affiliate_df(payout_frequency)
+    valid_affiliate_df = affiliate_df[['affiliate_id']]
+
+    # Commission Fee
+    transaction_df = get_aggregated_transactions(datestamp)
+    transaction_df = transaction_df.merge(valid_affiliate_df, how='inner', on=['affiliate_id'])
     save_commission_fee(transaction_df, from_transaction_date, to_transaction_date)
     transaction_df = prep_transaction_df(transaction_df)
-        # TODO: Save to cm_table thingy -- check
-        # TODO: Change Column Names -- check
-        # TODO: Drop Non Necessary Columns -- check
 
+    # Member Wager Product
     wager_df = get_aggregated_wagers(datestamp)
+    wager_df = wager_df.merge(valid_affiliate_df, how='inner', on=['affiliate_id'])
     save_member_wager_product(wager_df, from_transaction_date, to_transaction_date)
     wager_df = prep_wager_df(wager_df)
-        # TODO: Save to cm_table thingy -- check
-        # TODO: Change Column Names -- check
-        # TODO: Drop Non Necessary Columns -- check
 
-    adjustment_df = get_aggregated_adjustments(datestamp)
-
-    prev_settlement_df = get_previous_settlement_df(prev_from_transaction_date, prev_to_transaction_date)
-    affiliate_df = get_affiliate_df(payout_frequency)
-
-    print(transaction_df.columns, transaction_df.shape[0])
-    print(wager_df.columns, wager_df.shape[0])
-    print(wager_df[:10])
-
+    # Commission Summary
     commission_df = pd.concat([transaction_df, wager_df]).fillna(0)
     print(commission_df.columns)
     print(commission_df.dtypes)
-    commission_df = commission_df.groupby(['affiliate_id', 'currency', 'commission_status']).sum().reset_index()
+    groupby_columns = [
+            'affiliate_id', 
+            'currency', 
+            'member_id', 
+            'member_name',
+            'usd_rate',
+            'commission_status',
+            ]
+    commission_df = commission_df.groupby(groupby_columns).sum().reset_index()
+
+    save_commission_summary(commission_df, from_transaction_date, to_transaction_date)
+    commission_df = prep_commission_df(commission_df)
 
     print("Merged Transaction and Wager Data")
     print(commission_df.columns, commission_df.shape[0])
@@ -2026,13 +2082,22 @@ def calculate_affiliate_fees(payout_frequency, **kwargs):
     commission_df = convert_to_usd(commission_df)
 
     # Everything should be USD from here on
-
     print("Converted to USD")
     print(commission_df.columns, commission_df.shape[0])
     print(commission_df[:10])
 
+    adjustment_df = get_aggregated_adjustments(datestamp)
+    prev_settlement_df = get_previous_settlement_df(prev_from_transaction_date, prev_to_transaction_date)
+
     commission_df = pd.concat([commission_df, adjustment_df, prev_settlement_df]).fillna(0)
-    commission_df = commission_df.groupby(['affiliate_id', 'currency']).sum().reset_index()
+
+    groupby_columns = [
+            'affiliate_id', 
+            'currency', 
+            'usd_rate',
+            'commission_status',
+            ]
+    commission_df = commission_df.groupby(groupby_columns).sum().reset_index()
 
     commission_df = commission_df.merge(affiliate_df, how='inner', on=['affiliate_id'])
 
@@ -2281,4 +2346,7 @@ def monthly_commission():
             scheduled_calculation_task_group(PAYOUT_FREQUENCY_BI_MONTHLY)()
             ]
 
-monthly_commission()
+dag_object = monthly_commission()
+
+if __name__ == "__main__":
+    dag_object.test()
