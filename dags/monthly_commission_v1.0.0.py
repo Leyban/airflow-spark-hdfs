@@ -2346,7 +2346,5 @@ def monthly_commission():
             scheduled_calculation_task_group(PAYOUT_FREQUENCY_BI_MONTHLY)()
             ]
 
-dag_object = monthly_commission()
+monthly_commission()
 
-if __name__ == "__main__":
-    dag_object.test()
