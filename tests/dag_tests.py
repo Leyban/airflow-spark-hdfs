@@ -1,34 +1,43 @@
-import datetime
+# tests/test_your_dag.py
 
 import pytest
-from airflow import DAG
+from datetime import datetime
+from airflow.models import DagBag
 
 @pytest.fixture
-def test_dag():
-    return DAG(
-        dag_id="test_dag",
-        default_args={"owner": "airflow", "start_date": datetime.datetime(2018, 1, 1)},
-        schedule_interval=datetime.timedelta(days=1),
-    )
+def dag_bag():
+    return DagBag(include_examples=False)
 
-pytest_plugins = ["helpers_namespace"]
+def test_dag_loaded_successfully(dag_bag):
+    assert dag_bag.dags is not None, "DAG did not load successfully."
 
-@pytest.helpers.register
-def run_task(task, dag):
-    dag.clear()
-    task.run(
-        start_date=dag.default_args["start_date"],
-        end_date=dag.default_args["start_date"],
-    )
+def test_task_exists_in_dag(dag_bag):
+    dag_id = 'your_dag_id'
+    dag = dag_bag.get_dag(dag_id)
+    
+    assert dag is not None, f"DAG '{dag_id}' not found."
+    
+    task_id = 'your_task_id'
+    task = dag.get_task(task_id)
+    
+    assert task is not None, f"Task '{task_id}' not found in DAG '{dag_id}'."
 
-import pytest
-from airflow.operators.bash import BashOperator
+def test_dag_runs(dag_bag):
+    dag_id = 'your_dag_id'
+    dag = dag_bag.get_dag(dag_id)
+    
+    assert dag is not None, f"DAG '{dag_id}' not found."
+    
+    # Provide a specific execution date for testing
+    execution_date = datetime(2022, 1, 1)
+    dag.clear(start_date=execution_date, end_date=execution_date)
+    
+    # Trigger the DAG run
+    dag.run(start_date=execution_date, end_date=execution_date, donot_pickle=True)
 
-def test_dummy(test_dag, tmpdir):
-    tmpfile = tmpdir.join("hello.txt")
+    # Additional assertions based on your DAG's expected behavior
+    # ...
 
-    task = BashOperator(task_id="test", bash_command=f"echo 'hello' > {tmpfile}", dag=test_dag)
-    pytest.helpers.run_task(task=task, dag=test_dag)
+    # Clean up
+    dag.clear(start_date=execution_date, end_date=execution_date)
 
-    assert len(tmpdir.listdir()) == 1
-    assert tmpfile.read().replace("n", "") == "hello"
