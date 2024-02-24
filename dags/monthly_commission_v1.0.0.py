@@ -1622,7 +1622,8 @@ def get_aggregated_transactions(datestamp):
         "adjustment_reason_name",
         "remark",
         "amount",
-        "payment_type_rate"
+        "payment_type_rate",
+        "type"
         ])
 
     for transaction_type in TRANSACTION_TYPES:
@@ -1798,11 +1799,14 @@ def prep_commission_df(commission_df):
 
 @task(trigger_rule=TriggerRule.ALL_DONE)
 def check_schedule(payout_frequency:str, **kwargs):
+    from airflow.models import Variable
+
+    day_of_week = int( Variable.get("COMMISSION_WEEKLY_DAY", 0) )
     exec_date = datetime.strptime(kwargs['ds'], "%Y-%m-%d")
-    print("Checking Schedule: ", kwargs['ds'])
+    print("Checking Schedule: ", kwargs['ds'], " -- day of week: ", exec_date.weekday())
 
     if payout_frequency == PAYOUT_FREQUENCY_WEEKLY:
-        if exec_date.weekday() != WEEKLY_DAY:
+        if exec_date.weekday() != day_of_week:
             print("Skipping Today")
             raise AirflowSkipException
 
