@@ -626,6 +626,7 @@ def get_adjustment_data(date_from, date_to):
 
 def save_commission_fee(df: DataFrame, date_from, date_to):
     conn_affiliate_pg_hook = PostgresHook(postgres_conn_id='affiliate_conn_id')
+    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
 
     print(f"Deleting old commission_fee date_from:{date_from} ; date_to:{date_to}")
     delete_sql = f"""
@@ -636,15 +637,13 @@ def save_commission_fee(df: DataFrame, date_from, date_to):
         """
     conn_affiliate_pg_hook.run(delete_sql)
 
-    if df.shape[0] == 0:
-        return
-
     df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
     df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
     df['from_transaction_date'] = date_from
     df['to_transaction_date'] = date_to
 
-    engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
+    if df.shape[0] == 0:
+        return
 
     df.to_sql(COMMISSION_FEE_TABLE, engine_affiliate, if_exists='append', index=False)
 
@@ -661,13 +660,13 @@ def save_member_wager_product(df: DataFrame, date_from, date_to):
         """
     conn_affiliate_pg_hook.run(delete_sql)
 
-    if df.shape[0] == 0:
-        return
-
     df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
     df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
     df['from_transaction_date'] = date_from
     df['to_transaction_date'] = date_to
+
+    if df.shape[0] == 0:
+        return
 
     engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
 
@@ -1623,6 +1622,7 @@ def get_aggregated_transactions(datestamp):
         "remark",
         "amount",
         "payment_type_rate",
+        "payment_method_code",
         "type"
         ])
 
@@ -1682,7 +1682,16 @@ def get_aggregated_wagers(datestamp):
     import sqlite3
     import pandas as pd
 
-    wager_df = pd.DataFrame(columns=[ "affiliate_id", "member_id", "member_name", "currency", "total_stake", "total_count", "win_loss" ])
+    wager_df = pd.DataFrame(columns=[ 
+                                     "affiliate_id", 
+                                     "member_id", 
+                                     "member_name", 
+                                     "currency", 
+                                     "total_stake", 
+                                     "total_count", 
+                                     "win_loss",
+                                     "product"
+                                     ])
 
     for product in PRODUCT_CODES:
         table_name = f"{product}_{datestamp}"
@@ -1760,13 +1769,13 @@ def save_commission_summary(df, date_from, date_to):
         """
     conn_affiliate_pg_hook.run(delete_sql)
 
-    if df.shape[0] == 0:
-        return
-
     df['usd_rate'] = df.apply(lambda x: get_usd_rate(x), axis=1)
     df['commission_status'] = COMMISSION_PAYMENT_STATUS_PROCESSING
     df['from_transaction_date'] = date_from
     df['to_transaction_date'] = date_to
+
+    if df.shape[0] == 0:
+        return
 
     engine_affiliate = conn_affiliate_pg_hook.get_sqlalchemy_engine()
 

@@ -48,8 +48,8 @@ func generateAdjustments(memberID int64, timeEnd time.Time) {
 
 func generateTransactionMembers(timeEnd time.Time) {
 
-	affiliateCount := 1000
-	memberCount := 10_000
+	affiliateCount := 100
+	memberCount := 1000
 
 	for i := 1; i <= affiliateCount; i++ {
 		createDummyAffiliate(int64(i))
@@ -69,8 +69,8 @@ func generateTransactionMembers(timeEnd time.Time) {
 }
 
 func generateAffAdjustments(timeEnd time.Time) {
-	affiliateCount := 1000
-	adjustmentCount := 1000
+	affiliateCount := 100
+	adjustmentCount := 100
 
 	for affId := affiliateCount; affId >= 771; affId-- {
 		for i := 0; i <= adjustmentCount; i++ {
@@ -97,7 +97,7 @@ func generateTransactionsExistingMembers(timeEnd time.Time) {
 }
 
 func main() {
-	// timeEnd := time.Date(2023, 12, 31, 0, 0, 0, 0, time.UTC)
+	timeEnd := time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC)
 
 	// generateWagerMembers()
 	// generateTransactionMembers(timeEnd)
@@ -106,7 +106,7 @@ func main() {
 
 	// copyMembersToPaymentDB()
 
-	// copyWagersToMonth(timeEnd)
+	copyWagersToMonth(timeEnd)
 
-	// generateAffAdjustments(timeEnd)
+	generateAffAdjustments(timeEnd)
 }

@@ -99,6 +99,7 @@ func CopySimpleplay(timeEnd time.Time) {
 	for i := 1; i <= 31; i++ {
 		fmt.Println("Inserting Simpleplay for day", i)
 		for _, data := range original {
+			data.BetId = RandInt64(10000000000)
 			data.BetTime = timeEnd.Add(time.Hour*time.Duration(RandInt(23))).AddDate(0, 0, 1-i).Format(time.RFC3339Nano)
 			_, err := db.NamedExec(db.Rebind(insertSQL), data)
 			if err != nil {
