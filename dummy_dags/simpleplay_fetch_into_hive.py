@@ -32,7 +32,7 @@ defaultSPEncrypKey = "g9G16nTs"
 # Get the current date
 today = datetime.now()
 
-# Calculate the date one year ago from today
+# Calculate the date one day ago from today
 yesterday = today - timedelta(days=1)
 
 # Format the dates as strings in the format "YYYYMMDDHHMMSS"

@@ -1,0 +1,23 @@
+FROM apache/airflow:2.1.0
+USER root
+
+# Install OpenJDK-11
+# RUN apt update && \
+#     apt-get -y install libpq-dev gcc && \
+#     apt-get install -y procps && \
+#     apt-get install -y build-essential && \
+#     apt-get install -y libsasl2-dev && \
+#     apt-get install -y openjdk-11-jdk && \
+#     apt-get install -y ant && \
+#     apt-get clean;
+
+# Set JAVA_HOME
+# ENV JAVA_HOME /usr/lib/jvm/java-11-openjdk-amd64/
+# RUN export JAVA_HOME
+
+USER airflow
+
+COPY ./requirements_release.txt /
+RUN python -m pip install --upgrade pip
+RUN pip install -r /requirements_release.txt
+COPY --chown=airflow:root ./dags /opt/airflow/dags

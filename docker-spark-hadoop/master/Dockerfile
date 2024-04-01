@@ -10,4 +10,7 @@ ENV SPARK_MASTER_LOG /spark/logs
 
 EXPOSE 8080 7077 6066
 
+COPY ./requirements.txt /
+RUN pip install -r /requirements.txt
+
 CMD ["/bin/bash", "/master.sh"]

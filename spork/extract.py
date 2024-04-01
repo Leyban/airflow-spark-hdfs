@@ -3,37 +3,34 @@ from pyspark.sql.functions import to_timestamp, date_format, col
 import logging
 import requests
 import sys
+import os
 
 import psycopg2
 
 # Extract Variables
-psycopg2_conn_string = sys.argv[1]
-HDFS_DATALAKE = sys.argv[2]
-SPARK_MASTER = sys.argv[3]
-pg_history_url = sys.argv[4]
-secret_key = sys.argv[5]
-operator_token = sys.argv[6]
-postgres_password = sys.argv[7]
+psycopg2_conn_string = os.getenv('COLLECTOR_DB_CONN_STR')
+HDFS_DATALAKE = os.getenv( 'HDFS_DATALAKE' ) 
+SPARK_MASTER = os.getenv( 'SPARK_MASTER' ) 
+pg_history_url = os.getenv( 'PGSOFT_URL' ) 
+secret_key = os.getenv( 'PGSOFT_KEY' ) 
+operator_token = os.getenv( 'PGSOFT_OPERATOR' ) 
+postgres_password = os.getenv( 'POSTGRES_PASSWORD' ) 
 
 history_api = '/v2/Bet/GetHistory'
-
 url = f"{pg_history_url}{history_api}" 
 
 tblLocation = f'{HDFS_DATALAKE}/wagers/pgsoft'
 
-
 def get_simpleplay_version():    
     try:
         # Define connection
-        conn = psycopg2.connect(psycopg2_conn_string, password=postgres_password)
+        conn = psycopg2.connect(psycopg2_conn_string[1:-1], password=postgres_password)
         cursor = conn.cursor()
 
         # Execute Query
-        print("executing")
         cursor.execute("SELECT row_version FROM pgsoft_version LIMIT 1")
 
         # Get all results
-        print("fetching")
         pgsoft_version = cursor.fetchone()
 
         print(f" PG_SOFT Version {pgsoft_version[0]} ")
@@ -43,7 +40,7 @@ def get_simpleplay_version():
         return pgsoft_version[0]
     
     except:
-        logging.fatal("Unable to fetch data") 
+        logging.exception("message") 
 
 
 def main():
@@ -51,7 +48,7 @@ def main():
     print(" Initializing Spark Session ")
     spark = SparkSession.builder \
         .appName("Fetch_PGSoft_to_HDFS") \
-        .master(SPARK_MASTER) \
+        .remote(SPARK_MASTER) \
         .enableHiveSupport() \
         .getOrCreate()
 
@@ -94,9 +91,11 @@ def main():
 
     except requests.exceptions.RequestException as err:
         logging.fatal("Request error:", err)
+        sys.exit(1)
 
     except Exception as Argument:
         logging.fatal(f"Error occurred: {Argument}")
+        sys.exit(1)
 
 if __name__=="__main__":
     main()

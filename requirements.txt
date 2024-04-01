@@ -1,7 +1,14 @@
-pyDes
 # sasl
 # thrift
 # thrift-sasl
 # PyHive
+# hdfs
 pyspark
+apache-airflow-providers-apache-hdfs
+apache-airflow-providers-postgres
 apache-airflow-providers-apache-spark
+apache-airflow-providers-apache-hive
+apache-airflow-providers-apache-cassandra
+psycopg2
+skpy
+pycryptodome
