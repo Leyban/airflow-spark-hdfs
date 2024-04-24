@@ -13,8 +13,8 @@ import (
 )
 
 type HistoryResponse struct {
-	ErrorMsgID    string        `xml:"ErrorMsgId"`
-	ErrorMsg      string        `xml:"ErrorMsg"`
+	ErrorMsgID    string        `xml:"-"` // ErrorMsgId
+	ErrorMsg      string        `xml:"-"` // ErrorMsg
 	BetDetailList BetDetailList `xml:"BetDetailList"`
 }
 
@@ -45,7 +45,7 @@ type BetDetail struct {
 }
 
 func runQuery() []BetDetail {
-	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=collectorDB sslmode=disable")
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=dummyDB sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}

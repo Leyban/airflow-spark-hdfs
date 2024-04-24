@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,7 +13,7 @@ import (
 )
 
 type BetDetail struct {
-	ID                           *int64   `db:"id" json:"id"`
+	ID                           *int64   `db:"id" json:"-"`
 	BetID                        *int64   `db:"bet_id" json:"betId"`
 	ParentBetID                  *int64   `db:"parent_bet_id" json:"parentBetId"`
 	PlayerName                   *string  `db:"player_name" json:"playerName"`
@@ -40,7 +39,7 @@ type Response struct {
 }
 
 func runQuery() []BetDetail {
-	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=collectorDB sslmode=disable")
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=dummyDB sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,12 +56,13 @@ func runQuery() []BetDetail {
 
 	for i, r := range records {
 		betTime, _ := time.Parse(time.RFC3339Nano, *r.BetTime)
-		epochMs := betTime.UnixNano() / 1e6
+		epochMs := betTime.UnixNano() / 1e9
 
-		s := rand.NewSource(time.Now().UnixNano())
-		r := rand.New(s)
+		// s := rand.NewSource(time.Now().UnixNano())
+		// r := rand.New(s)
 
-		epochMs -= int64(r.Intn(1e12))
+		// epochMs -= int64(r.Intn(1e9))
+
 		epochStr := strconv.Itoa(int(epochMs))
 		records[i].BetTime = &epochStr
 	}
