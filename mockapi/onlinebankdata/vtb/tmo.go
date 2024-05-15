@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/julienschmidt/httprouter"
 )
 
 type transactionQuery struct {
@@ -75,7 +76,7 @@ func formatTime(t string) (string, error) {
 	return tstring, nil
 }
 
-func HandleTMO(w http.ResponseWriter, r *http.Request) {
+func HandleTMO(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	var query transactionQuery
 
 	err := json.NewDecoder(r.Body).Decode(&query)

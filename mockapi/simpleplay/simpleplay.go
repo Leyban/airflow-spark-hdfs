@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/julienschmidt/httprouter"
 	_ "github.com/lib/pq"
 )
 
@@ -95,7 +96,7 @@ func runQuery() []BetDetail {
 
 }
 
-func HandleSimplePlay(w http.ResponseWriter, r *http.Request) {
+func HandleSimplePlay(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Println("Simpleplay")
 
 	betDetail := runQuery()

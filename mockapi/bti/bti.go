@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/julienschmidt/httprouter"
 )
 
 type Wager struct {
@@ -75,7 +76,7 @@ type Bet struct {
 }
 
 type Selection struct {
-	Id              int     `db:"id" json:"Id"`
+	Id              int     `db:"id" json:"-"`
 	Isresettled     int     `db:"is_resettled" json:"Isresettled"`
 	RelatedBetID    int64   `db:"related_bet_id" json:"RelatedBetID"`
 	ActionType      string  `db:"action_type" json:"ActionType"`
@@ -126,7 +127,7 @@ func randDate(dateFrom, dateTo time.Time) time.Time {
 	return newDate
 }
 
-func HandleBtiToken(w http.ResponseWriter, r *http.Request) {
+func HandleBtiToken(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Println("Bti Token")
 
 	var tokenReq TokenRequest
@@ -155,6 +156,17 @@ func HandleBtiToken(w http.ResponseWriter, r *http.Request) {
 func randomizeBetCreationTime(bets []Bet, dateFrom, dateTo time.Time) []Bet {
 	for i := range bets {
 		bets[i].CreationDate = randDate(dateFrom, dateTo).Format(time.RFC3339Nano)
+	}
+
+	return bets
+}
+
+func attachSelection(db sqlx.DB, bets []Bet) []Bet {
+	var selection Selection
+	db.Get(&selection, "SELECT * FROM bti_selection LIMIT = 1")
+
+	for i := range bets {
+		bets[i].Selections = []Selection{selection}
 	}
 
 	return bets
@@ -189,8 +201,6 @@ func runQuery(req History) (Wager, error) {
 		fmt.Println(err)
 	}
 
-	params = append(params, dateFrom, dateTo)
-
 	betCount := countBets(db, rawSql.String(), params)
 
 	offset := req.Pagination.RowPerPage * (req.Pagination.Page)
@@ -202,8 +212,12 @@ func runQuery(req History) (Wager, error) {
 		fmt.Println(err)
 	}
 
+	bets = attachSelection(*db, bets)
+
+	bets = randomizeBetCreationTime(bets, dateFrom, dateTo)
+
 	wager.Bets = bets
-	wager.CurrentPage = int64(math.Ceil(float64(betCount / req.Pagination.RowPerPage)))
+	wager.TotalPages = int64(math.Ceil(float64(betCount / req.Pagination.RowPerPage)))
 
 	return wager, nil
 }
@@ -220,7 +234,7 @@ func countBets(db *sqlx.DB, rawSql string, parameters []any) int64 {
 	return count
 }
 
-func HandleBti(w http.ResponseWriter, r *http.Request) {
+func HandleBti(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Println("Bti")
 
 	fmt.Println(r.URL.Query())
@@ -246,6 +260,7 @@ func HandleBti(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("JSON Decoding Error")
 		fmt.Println(err)
 	}
+	fmt.Println(historyReq.Pagination.Page)
 
 	result, err := runQuery(historyReq)
 	if err != nil {

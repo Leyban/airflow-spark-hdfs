@@ -2448,6 +2448,26 @@ def monthly_commission():
         transaction_task_group(TRANSACTION_TYPE_ADJUSTMENT, get_adjustment_data)()
 
     @task_group
+    def aggregate_transactions_group(payout_frequency):
+        def transaction_aggregation(transaction_type):
+            @task_group(group_id=transaction_type)
+            def aggregate_transactions_task_group():
+                create_scheduled_table = create_scheduled_transaction_table(
+                    transaction_type, payout_frequency
+                )
+                aggregate_transactions_task = aggregate_scheduled_transactions(
+                    transaction_type, payout_frequency
+                )
+
+                create_scheduled_table >> aggregate_transactions_task
+
+            return aggregate_transactions_task_group
+
+        transaction_aggregation(TRANSACTION_TYPE_DEPOSIT)()
+        transaction_aggregation(TRANSACTION_TYPE_WITHDRAWAL)()
+        transaction_aggregation(TRANSACTION_TYPE_ADJUSTMENT)()
+
+    @task_group
     def get_wagers():
         def wager_task_group(product, get_wager_func):
             @task_group(group_id=product)
@@ -2480,6 +2500,42 @@ def monthly_commission():
         wager_task_group(PRODUCT_CODE_DIGITAIN, get_digitain_wager)()
 
     @task_group
+    def aggregate_wagers(payout_frequency):
+        def wager_aggregation(product):
+            @task_group(group_id=product)
+            def aggregate_wagers_task_group():
+                create_scheduled_table = create_scheduled_wager_table(
+                    product, payout_frequency
+                )
+                aggregate_wagers_task = aggregate_scheduled_wagers(
+                    product, payout_frequency
+                )
+
+                create_scheduled_table >> aggregate_wagers_task
+
+            return aggregate_wagers_task_group
+
+        wager_aggregation(PRODUCT_CODE_ALLBET)()
+        wager_aggregation(PRODUCT_CODE_ASIAGAMING)()
+        wager_aggregation(PRODUCT_CODE_AGSLOT)()
+        wager_aggregation(PRODUCT_CODE_AGYOPLAY)()
+        wager_aggregation(PRODUCT_CODE_SAGAMING)()
+        wager_aggregation(PRODUCT_CODE_SPSLOT)()
+        wager_aggregation(PRODUCT_CODE_SPFISH)()
+        wager_aggregation(PRODUCT_CODE_SABACV)()
+        wager_aggregation(PRODUCT_CODE_PGSOFT)()
+        wager_aggregation(PRODUCT_CODE_EBETGAMING)()
+        wager_aggregation(PRODUCT_CODE_BTISPORTS)()
+        wager_aggregation(PRODUCT_CODE_TFGAMING)()
+        wager_aggregation(PRODUCT_CODE_EVOLUTION)()
+        wager_aggregation(PRODUCT_CODE_GENESIS)()
+        wager_aggregation(PRODUCT_CODE_SABA)()
+        wager_aggregation(PRODUCT_CODE_SABANUMBERGAME)()
+        wager_aggregation(PRODUCT_CODE_SABAVIRTUAL)()
+        wager_aggregation(PRODUCT_CODE_WEWORLD)()
+        wager_aggregation(PRODUCT_CODE_DIGITAIN)()
+
+    @task_group
     def daily_data_gathering():
         get_transactions()
         get_wagers()
@@ -2487,8 +2543,19 @@ def monthly_commission():
     def scheduled_calculation_task_group(payout_frequency):
         @task_group(group_id=f"{payout_frequency}_calculation")
         def scheduled_calculation():
+            def timely_aggregation():
+                @task_group(group_id=f"{payout_frequency}_aggregation")
+                def frequency_based_aggregation():
+                    aggregate_transactions_group(payout_frequency)
+                    aggregate_wagers(payout_frequency)
+
+                return frequency_based_aggregation
+
             schedule_checker = check_schedule(payout_frequency)
+            aggregate_task_group = timely_aggregation()()
             calculation_task = calculate_affiliate_fees(payout_frequency)
+
+            (schedule_checker >> aggregate_task_group >> calculation_task)
 
             schedule_checker >> calculation_task
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/julienschmidt/httprouter"
 	_ "github.com/lib/pq"
 )
 
@@ -70,7 +71,7 @@ func runQuery() []BetDetail {
 	return records
 }
 
-func HandlePGSoft(w http.ResponseWriter, r *http.Request) {
+func HandlePGSoft(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Println("Pgsoft")
 	result := runQuery()
 	response := Response{
