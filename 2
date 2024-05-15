@@ -1,0 +1,220 @@
+package bti
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+	"time"
+
+	"github.com/jmoiron/sqlx"
+)
+
+type Wager struct {
+	LastUpdateDate string `json:"LastUpdateDate"`
+	Bets           []Bet
+	CurrentPage    int64 `json:"currentPage"`
+	TotalPages     int64 `json:"totalPages"`
+}
+
+type TokenRequest struct {
+	AgentUsername string `json:"agentUserName"`
+	AgentPassword string `json:"agentPassword"`
+}
+
+type TokenResponse struct {
+	ErrorCode int    `json:"errorCode"`
+	Token     string `json:"token"`
+}
+
+type History struct {
+	From       string      `json:"from"`
+	To         string      `json:"to"`
+	Pagination *Pagination `json:"pagination"`
+}
+
+type Pagination struct {
+	Page       int64 `json:"page"`
+	RowPerPage int64 `json:"rowperpage"`
+}
+
+type Bet struct {
+	PL                 float64
+	NonCashOutAmount   float64
+	ComboBonusAmount   float64
+	BetSettledDate     *string
+	PurchaseID         string
+	UpdateDate         *string
+	Odds               int
+	OddsInUserStyle    string
+	OddsStyleOfUser    string
+	TotalStake         float64
+	OddsDec            float64
+	ValidStake         float64
+	Platform           string
+	Return             float64
+	DomainID           int
+	BetStatus          string
+	Brand              string
+	UserName           string
+	BetTypeName        string
+	BetTypeId          int
+	CreationDate       *string
+	Status             string
+	CustomerID         int32
+	MerchantCustomerID string
+	Currency           string
+	PlayerLevelID      int
+	PlayerLevelName    string
+	Selections         []Selection
+	CreateAt           time.Time
+	UpdateAt           time.Time
+}
+
+type Selection struct {
+	Isresettled     int
+	RelatedBetID    int64
+	ActionType      string
+	BonusID         int64
+	CouponCode      string
+	ReferenceID     int64
+	BetID           string
+	LineID          int64
+	Odds            int
+	OddsInUserStyle string
+	LeagueName      string
+	LeagueID        int64
+	HomeTeam        string
+	AwayTeam        string
+	BranchName      string
+	BranchID        int
+	LineTypeName    string
+	Points          float64
+	Score           string
+	YourBet         string
+	EventDate       *string
+	EventTypeName   string
+	BetType         string
+	Isfreebet       int
+	OddsDec         float64
+	LiveScore1      int
+	LiveScore2      int
+	Status          string
+	GameID          int64
+	EventTypeID     int64
+	LineTypeID      int64
+	IsLive          int
+	UpdateDate      *string
+	IsNewLine       int
+}
+
+const dummyToken = "ThisIsADummyTokenEveryBodySayYeah"
+
+func HandleBtiToken(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Bti Token")
+
+	var tokenReq TokenRequest
+
+	err := json.NewDecoder(r.Body).Decode(&tokenReq)
+	if err != nil {
+		fmt.Println("Json Error")
+		fmt.Println(err)
+	}
+	fmt.Println(tokenReq.AgentUsername, tokenReq.AgentPassword)
+
+	tokRes := TokenResponse{
+		ErrorCode: 0,
+		Token:     dummyToken,
+	}
+	jsonResponse, err := json.Marshal(tokRes)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonResponse)
+}
+
+func runQuery(req History) (Wager, error) {
+	var (
+		bets   []Bet
+		rawSql bytes.Buffer
+	)
+
+	wager := Wager{
+		LastUpdateDate: time.Now().Format(time.RFC3339Nano),
+		CurrentPage:    page,
+	}
+
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=dummyDB sslmode=disable")
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer db.Close()
+
+	rawSql.WriteString(`
+        SELECT *
+        FROM bti_wager
+    `)
+
+	offset := req.Pagination.RowPerPage * (req.Pagination.Page - 1)
+	rawSql.WriteString(" LIMIT ? OFFSET ?")
+
+	err = db.Select(&bets, db.Rebind(rawSql.String()), req.Pagination.RowPerPage, offset)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	betCount := countBets(db)
+
+	wager.Bets = bets
+	wager.CurrentPage = int64(math.Ceil(float64(betCount / req.Pagination.RowPerPage)))
+
+	return wager, nil
+}
+
+func countBets(db *sqlx.DB) int64 {
+	var count int64
+	err := db.Select(&count, "SELECT count(*) FROM bti_wager")
+	if err != nil {
+		fmt.Println("Count Query Error")
+		fmt.Println(err)
+	}
+
+	return count
+}
+
+func HandleBti(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Bti")
+
+	fmt.Println(r.URL.Query())
+
+	queries := r.URL.Query()
+
+	if len(queries) > 0 {
+		tok, ok := queries["token"]
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+		if tok[0] != dummyToken {
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	} else {
+		w.WriteHeader(http.StatusTeapot)
+	}
+
+	var historyReq History
+
+	err := json.NewDecoder(r.Body).Decode(&historyReq)
+	if err != nil {
+		fmt.Println("JSON Decoding Error")
+		fmt.Println(err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	// w.Write(jsonResponse)
+
+}

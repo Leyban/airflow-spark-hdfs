@@ -9,12 +9,13 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/julienschmidt/httprouter"
 	_ "github.com/lib/pq"
 )
 
 type HistoryResponse struct {
-	ErrorMsgID    string        `xml:"ErrorMsgId"`
-	ErrorMsg      string        `xml:"ErrorMsg"`
+	ErrorMsgID    string        `xml:"-"` // ErrorMsgId
+	ErrorMsg      string        `xml:"-"` // ErrorMsg
 	BetDetailList BetDetailList `xml:"BetDetailList"`
 }
 
@@ -45,7 +46,7 @@ type BetDetail struct {
 }
 
 func runQuery() []BetDetail {
-	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=collectorDB sslmode=disable")
+	db, err := sqlx.Connect("postgres", "user=postgres password=secret dbname=dummyDB sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func runQuery() []BetDetail {
 
 }
 
-func HandleSimplePlay(w http.ResponseWriter, r *http.Request) {
+func HandleSimplePlay(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Println("Simpleplay")
 
 	betDetail := runQuery()
