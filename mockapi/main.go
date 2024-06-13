@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"mock/bti"
+	"mock/genesis"
 	"mock/onlinebankdata/vtb"
 	"mock/pgsoft"
 	"mock/simpleplay"
@@ -15,6 +16,7 @@ import (
 func main() {
 	// vendors
 	r := httprouter.New()
+	r.GET("/genesis", genesis.HandleGenesis)
 	r.GET("/tfgaming/:currency/api/v2/bet-transaction/", tfgaming.HandleTFGaming)
 	r.POST("/bti", bti.HandleBti)
 	r.POST("/bti/token/authorize_v2", bti.HandleBtiToken)

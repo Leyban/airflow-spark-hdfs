@@ -77,7 +77,7 @@ type Bet struct {
 
 type Selection struct {
 	Id              int     `db:"id" json:"-"`
-	Isresettled     int     `db:"is_resettled" json:"Isresettled"`
+	Isresettled     int     `db:"is_resettled" json:"isresettled"`
 	RelatedBetID    int64   `db:"related_bet_id" json:"RelatedBetID"`
 	ActionType      string  `db:"action_type" json:"ActionType"`
 	BonusID         int64   `db:"bonus_id" json:"BonusID"`
@@ -100,7 +100,7 @@ type Selection struct {
 	EventDate       *string `db:"event_date" json:"EventDate"`
 	EventTypeName   string  `db:"event_type_name" json:"EventTypeName"`
 	BetType         string  `db:"bet_type" json:"BetType"`
-	Isfreebet       int     `db:"isfreebet" json:"Isfreebet"`
+	Isfreebet       int     `db:"is_free_bet" json:"isfreebet"`
 	OddsDec         float64 `db:"odds_dec" json:"OddsDec"`
 	LiveScore1      int     `db:"live_score1" json:"LiveScore1"`
 	LiveScore2      int     `db:"live_score2" json:"LiveScore2"`
@@ -165,8 +165,11 @@ func attachSelection(db sqlx.DB, bets []Bet) []Bet {
 	var selection Selection
 	db.Get(&selection, "SELECT * FROM bti_selection LIMIT = 1")
 
+	selection.BetID = "UpdatedBetID"
+
 	for i := range bets {
 		bets[i].Selections = []Selection{selection}
+		// bets[i].PurchaseID = "123123123123"
 	}
 
 	return bets
@@ -260,7 +263,6 @@ func HandleBti(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		fmt.Println("JSON Decoding Error")
 		fmt.Println(err)
 	}
-	fmt.Println(historyReq.Pagination.Page)
 
 	result, err := runQuery(historyReq)
 	if err != nil {
@@ -277,4 +279,5 @@ func HandleBti(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(jsonResponse)
+
 }

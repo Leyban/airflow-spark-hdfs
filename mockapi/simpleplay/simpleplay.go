@@ -3,6 +3,7 @@ package simpleplay
 import (
 	"encoding/xml"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -14,8 +15,8 @@ import (
 )
 
 type HistoryResponse struct {
-	ErrorMsgID    string        `xml:"-"` // ErrorMsgId
-	ErrorMsg      string        `xml:"-"` // ErrorMsg
+	ErrorMsgID    string        `xml:"ErrorMsgId"` // ErrorMsgId
+	ErrorMsg      string        `xml:"ErrorMsg"`   // ErrorMsg
 	BetDetailList BetDetailList `xml:"BetDetailList"`
 }
 
@@ -90,6 +91,9 @@ func runQuery() []BetDetail {
 		} else {
 			records[i].GameResult = "Lose"
 		}
+
+		records[i].BetTime = time.Now().Format("2006-01-02T15:04:05.00")
+		records[i].PayoutTime = time.Now().Format("2006-01-02T15:04:05.00")
 	}
 
 	return records
@@ -99,6 +103,35 @@ func runQuery() []BetDetail {
 func HandleSimplePlay(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 	fmt.Println("Simpleplay")
 
+	// Read the raw body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Error reading request body", http.StatusInternalServerError)
+		return
+	}
+
+	// Print the raw body
+	fmt.Printf("Raw request body: %s\n", string(body))
+
+	for key, values := range r.Form { // range over map
+		for _, value := range values { // range over []string
+			fmt.Println(key, value)
+		}
+	}
+
+	// if err := r.ParseForm(); err != nil {
+	// 	http.Error(w, "Error parsing form data", http.StatusBadRequest)
+	// 	return
+	// }
+
+	// Get the form values
+	// q := r.FormValue("q")
+	// s := r.FormValue("s")
+
+	// Print the form values
+	// fmt.Println("Received q: ", q)
+	// fmt.Println("Received s: ", s)
+
 	betDetail := runQuery()
 
 	betDetailList := BetDetailList{
@@ -106,8 +139,8 @@ func HandleSimplePlay(w http.ResponseWriter, r *http.Request, _ httprouter.Param
 	}
 
 	response := HistoryResponse{
-		ErrorMsg:      "Nada",
-		ErrorMsgID:    "NadaID",
+		ErrorMsg:      "Success",
+		ErrorMsgID:    "0",
 		BetDetailList: betDetailList,
 	}
 
