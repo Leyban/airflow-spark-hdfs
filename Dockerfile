@@ -1,4 +1,4 @@
-FROM apache/airflow:2.7.3
+FROM apache/airflow:2.9.2
 USER root
 
 # Install OpenJDK-11
