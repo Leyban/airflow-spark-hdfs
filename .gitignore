@@ -1,12 +1,12 @@
 /airflow_env
 
-/logs
+logs/
 
-/dags/__pycache__
+/*/__pycache__
 
 /hdfs
 
-/data
+data/
 
 /metastore-postgresql
 
